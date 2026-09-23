@@ -4,7 +4,7 @@ const L = require('./_lib');
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Session-Token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Session-Token, X-Admin-Session');
 
   if (req.method === 'OPTIONS') return res.status(204).end();
 
@@ -50,8 +50,6 @@ module.exports = async (req, res) => {
 // CLIENT (ANDROID) ENDPOINTS
 // ═══════════════════════════════════════════════════════════════════════════
 
-const ALLOWED_PACKAGES = ['com.cloud.tools750'];
-
 async function clientLogin(req, res) {
   if (req.method !== 'POST') return L.fail(res, 'method_not_allowed', 405);
 
@@ -64,9 +62,6 @@ async function clientLogin(req, res) {
   if (!packageName) return L.fail(res, 'package_required', 400);
   if (!androidId)   return L.fail(res, 'android_id_required', 400);
 
-  if (!ALLOWED_PACKAGES.includes(packageName))
-    return L.fail(res, 'package_mismatch', 403);
-
   const ip = L.clientIp(req);
 
   const ipCheck = await L.checkRate(`ip:${ip}`, 15, 60);
@@ -77,7 +72,7 @@ async function clientLogin(req, res) {
   const key = await L.qOne(
     `SELECT k.*,
             fp.id AS fp_id, fp.rtdb_url, fp.project_id AS fb_project_id,
-            fp.sa_json_base64
+            fp.sa_json_base64, fp.allowed_packages
      FROM license_keys k
      JOIN firebase_projects fp ON k.project_id = fp.id
      WHERE k.key_hash = $1 AND fp.is_active = TRUE`,
@@ -88,6 +83,24 @@ async function clientLogin(req, res) {
     await L.checkRate(`key:${keyHash}`, 15, 60);
     return L.fail(res, 'invalid_key', 401);
   }
+
+  // ── Per-project package allowlist check ────────────────────────────────
+  const allowed = (key.allowed_packages || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (allowed.length === 0) {
+    return L.fail(res, 'package_not_configured', 403,
+      { detail: 'No allowed packages configured for this project.' });
+  }
+
+  // '*' wildcard allows any package (use only for testing)
+  if (!allowed.includes('*') && !allowed.includes(packageName)) {
+    return L.fail(res, 'package_mismatch', 403,
+      { detail: `Package '${packageName}' not allowed for this project.` });
+  }
+  // ────────────────────────────────────────────────────────────────────────
 
   const kCheck = await L.checkRate(`key:${keyHash}`, 15, 60);
   if (!kCheck.allowed)
@@ -372,7 +385,7 @@ async function projectManage(req, res) {
 
   if (req.method === 'GET') {
     const projects = await L.q(
-      `SELECT id, name, rtdb_url, project_id, is_active, created_at,
+      `SELECT id, name, rtdb_url, project_id, is_active, created_at, allowed_packages,
               (CASE WHEN COALESCE(sa_json_base64,'') != '' THEN TRUE ELSE FALSE END) AS has_sa
        FROM firebase_projects ORDER BY name`
     );
@@ -387,21 +400,31 @@ async function projectManage(req, res) {
       const name = L.sanitizeStr(b.name, 128);
       const rtdbUrl = L.sanitizeStr(b.rtdb_url, 256).replace(/\/$/, '');
       const projectId = L.sanitizeStr(b.project_id, 128).toUpperCase();
+      const packages = L.sanitizeStr(b.allowed_packages || 'com.cloud.tools750', 512);
 
       if (!name || !rtdbUrl || !projectId)
         return L.fail(res, 'missing_fields', 400);
 
       const now = Math.floor(Date.now() / 1000);
       const inserted = await L.qOne(
-        `INSERT INTO firebase_projects (name, rtdb_url, project_id, is_active, created_at)
-         VALUES ($1,$2,$3,TRUE,$4) RETURNING id`,
-        [name, rtdbUrl, projectId, now]
+        `INSERT INTO firebase_projects (name, rtdb_url, project_id, is_active, created_at, allowed_packages)
+         VALUES ($1,$2,$3,TRUE,$4,$5) RETURNING id`,
+        [name, rtdbUrl, projectId, now, packages]
       );
 
       return L.ok(res, {
         id: inserted.id,
         warning: `Project added. Now click "SA" button to upload the service account JSON.`
       });
+    }
+
+    if (action === 'update_packages') {
+      const id = parseInt(b.id, 10);
+      const packages = L.sanitizeStr(b.allowed_packages || '', 512);
+      if (!id) return L.fail(res, 'id_required', 400);
+      if (!packages) return L.fail(res, 'packages_required', 400);
+      await L.run(`UPDATE firebase_projects SET allowed_packages=$1 WHERE id=$2`, [packages, id]);
+      return L.ok(res, { message: 'Packages updated' });
     }
 
     if (action === 'toggle_active') {
@@ -514,7 +537,6 @@ async function wakeDevices(req, res) {
   if (!projectRef) return L.fail(res, 'project_id_required', 400);
   if (tokens.length === 0) return L.fail(res, 'no_tokens', 400);
 
-  // Lookup project by numeric id OR prefix (case-insensitive)
   const project = await L.qOne(
     `SELECT id, project_id, rtdb_url, sa_json_base64
      FROM firebase_projects
@@ -531,11 +553,8 @@ async function wakeDevices(req, res) {
   }
 
   try {
-    // Get Firebase app for this project (SA loaded from DB)
     const { app } = await L.fbApp(project);
 
-    // HIGH-PRIORITY DATA-ONLY message
-    // (No "notification" block — otherwise onMessageReceived won't fire in background)
     const message = {
       data: {
         type: 'wake',
@@ -543,14 +562,13 @@ async function wakeDevices(req, res) {
       },
       android: {
         priority: 'high',
-        ttl: 60 * 1000 // 60s
+        ttl: 60 * 1000
       },
-      tokens: tokens.slice(0, 500) // FCM multicast limit
+      tokens: tokens.slice(0, 500)
     };
 
     const result = await app.messaging().sendEachForMulticast(message);
 
-    // Log first 5 failures for debugging
     const failures = [];
     result.responses.forEach((r, idx) => {
       if (!r.success && failures.length < 5) {
