@@ -39,25 +39,31 @@ function redis() {
   return _redis;
 }
 
-// ─── Firebase Admin multi-project (SA base64 in env) ─────────────────────
+// ─── Firebase Admin multi-project (SA base64 stored in DB) ───────────────
 const _fbApps = {};
-function fbApp(prefix) {
-  const key = String(prefix).toUpperCase();
+
+/**
+ * Load SA JSON from Postgres and init Firebase app.
+ * SA stored in firebase_projects.sa_json_base64 (base64 of JSON text).
+ * Cached in-process for warm lambda reuse.
+ */
+async function fbApp(projectRow) {
+  const key = String(projectRow.project_id).toUpperCase();
   if (_fbApps[key]) return _fbApps[key];
 
-  const encoded = process.env[`SA_${key}`];
-  if (!encoded) throw new Error(`SA_${key} not set in Vercel env`);
+  const b64 = projectRow.sa_json_base64;
+  if (!b64) throw new Error(`Service account not uploaded for project ${key}. Upload via web panel.`);
 
   let sa;
   try {
-    sa = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+    sa = JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));
   } catch (e) {
-    throw new Error(`Invalid SA_${key}: ${e.message}`);
+    throw new Error(`Invalid SA JSON for ${key}: ${e.message}`);
   }
 
   const app = admin.initializeApp({
     credential: admin.credential.cert(sa),
-    databaseURL: sa.database_url
+    databaseURL: projectRow.rtdb_url
       || `https://${sa.project_id}-default-rtdb.firebaseio.com`
   }, key);
 
@@ -65,8 +71,8 @@ function fbApp(prefix) {
   return _fbApps[key];
 }
 
-async function mintCustomToken(prefix, uid, claims) {
-  const { app } = fbApp(prefix);
+async function mintCustomToken(projectRow, uid, claims) {
+  const { app } = await fbApp(projectRow);
   return app.auth().createCustomToken(uid, claims);
 }
 
