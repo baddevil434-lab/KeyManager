@@ -26,7 +26,8 @@ module.exports = async (req, res) => {
     if (path === '/api/admin/keys/update')  return await keyUpdate(req, res);
 
     // ─── Admin: projects ─────────────────────────────────────────────────
-    if (path === '/api/admin/projects/manage') return await projectManage(req, res);
+    if (path === '/api/admin/projects/manage')    return await projectManage(req, res);
+    if (path === '/api/admin/projects/upload-sa') return await projectUploadSa(req, res);
 
     // ─── Admin: sessions ─────────────────────────────────────────────────
     if (path === '/api/admin/sessions/list') return await sessionList(req, res);
@@ -71,7 +72,9 @@ async function clientLogin(req, res) {
 
   const keyHash = L.hashKey(rawKey);
   const key = await L.qOne(
-    `SELECT k.*, fp.rtdb_url, fp.project_id AS fb_project_id
+    `SELECT k.*,
+            fp.id AS fp_id, fp.rtdb_url, fp.project_id AS fb_project_id,
+            fp.sa_json_base64
      FROM license_keys k
      JOIN firebase_projects fp ON k.project_id = fp.id
      WHERE k.key_hash = $1 AND fp.is_active = TRUE`,
@@ -95,11 +98,17 @@ async function clientLogin(req, res) {
     return L.fail(res, 'key_expired', 403);
   }
 
+  // Check SA is uploaded before minting
+  if (!key.sa_json_base64) {
+    return L.fail(res, 'project_not_configured', 500,
+      { detail: 'Service account not uploaded for this project. Admin must upload via web panel.' });
+  }
+
   let customToken;
   try {
     const uid = `admin_${key.id}_${L.crypto.createHash('sha256')
       .update(androidId).digest('hex').substring(0, 8)}`;
-    customToken = await L.mintCustomToken(key.fb_project_id, uid, {
+    customToken = await L.mintCustomToken(key, uid, {
       admin: true,
       projectId: String(key.fb_project_id).toLowerCase(),
       keyId: key.id,
@@ -156,8 +165,8 @@ async function clientVerify(req, res) {
     [sessionId]
   );
 
-  if (!row)                        return L.ok(res, { valid: false, reason: 'not_found' });
-  if (!row.is_active)              return L.ok(res, { valid: false, reason: 'killed' });
+  if (!row)                         return L.ok(res, { valid: false, reason: 'not_found' });
+  if (!row.is_active)               return L.ok(res, { valid: false, reason: 'killed' });
   if (Number(row.expires_at) < now) return L.ok(res, { valid: false, reason: 'expired' });
   if (row.key_status === 'blocked') {
     await L.run(`UPDATE client_sessions SET is_active=FALSE WHERE session_id=$1`, [sessionId]);
@@ -361,7 +370,8 @@ async function projectManage(req, res) {
 
   if (req.method === 'GET') {
     const projects = await L.q(
-      `SELECT id, name, rtdb_url, project_id, is_active, created_at
+      `SELECT id, name, rtdb_url, project_id, is_active, created_at,
+              (CASE WHEN COALESCE(sa_json_base64,'') != '' THEN TRUE ELSE FALSE END) AS has_sa
        FROM firebase_projects ORDER BY name`
     );
     return L.ok(res, { projects });
@@ -386,12 +396,10 @@ async function projectManage(req, res) {
         [name, rtdbUrl, projectId, now]
       );
 
-      const saKey = `SA_${projectId}`;
-      let warning = null;
-      if (!process.env[saKey]) {
-        warning = `Add env var ${saKey} in Vercel settings with base64 of service account JSON.`;
-      }
-      return L.ok(res, { id: inserted.id, warning });
+      return L.ok(res, {
+        id: inserted.id,
+        warning: `Project added. Now click "SA" button to upload the service account JSON.`
+      });
     }
 
     if (action === 'toggle_active') {
@@ -408,6 +416,51 @@ async function projectManage(req, res) {
   }
 
   return L.fail(res, 'method_not_allowed', 405);
+}
+
+async function projectUploadSa(req, res) {
+  if (req.method !== 'POST') return L.fail(res, 'method_not_allowed', 405);
+  if (!L.requireAdminSession(req)) return L.fail(res, 'unauthorized', 401);
+
+  const b = L.readBody(req);
+  const projectId = parseInt(b.project_id, 10);
+  const saJson = typeof b.sa_json === 'string' ? b.sa_json : '';
+
+  if (!projectId) return L.fail(res, 'project_id_required', 400);
+  if (!saJson || saJson.length < 100)
+    return L.fail(res, 'sa_json_required', 400, { detail: 'Paste valid service account JSON' });
+
+  // Validate JSON structure
+  let sa;
+  try {
+    sa = JSON.parse(saJson);
+  } catch (e) {
+    return L.fail(res, 'invalid_json', 400, { detail: e.message });
+  }
+
+  if (sa.type !== 'service_account' || !sa.private_key || !sa.client_email || !sa.project_id) {
+    return L.fail(res, 'not_service_account',
+      400,
+      { detail: 'This is not a valid service account JSON. Make sure it has type="service_account", private_key, client_email, project_id.' });
+  }
+
+  const proj = await L.qOne(`SELECT id, project_id FROM firebase_projects WHERE id=$1`, [projectId]);
+  if (!proj) return L.fail(res, 'project_not_found', 404);
+
+  // Store as base64
+  const b64 = Buffer.from(saJson, 'utf8').toString('base64');
+
+  await L.run(
+    `UPDATE firebase_projects SET sa_json_base64=$1 WHERE id=$2`,
+    [b64, projectId]
+  );
+
+  return L.ok(res, {
+    message: 'Service account uploaded successfully',
+    project_id: proj.project_id,
+    sa_project_id: sa.project_id,
+    client_email: sa.client_email
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
