@@ -32,6 +32,7 @@ module.exports = async (req, res) => {
     // ─── Admin: sessions ─────────────────────────────────────────────────
     if (path === '/api/admin/sessions/list') return await sessionList(req, res);
     if (path === '/api/admin/sessions/kill') return await sessionKill(req, res);
+    if (path === '/api/admin/wake') return await wakeDevices(req, res);
 
     // ─── Health check ────────────────────────────────────────────────────
     if (path === '/api/health') return L.ok(res, { ts: Date.now() });
@@ -495,4 +496,75 @@ async function sessionKill(req, res) {
 
   await L.run(`UPDATE client_sessions SET is_active=FALSE WHERE session_id=$1`, [sessionId]);
   return L.ok(res, {});
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADMIN: WAKE OFFLINE DEVICES (FCM dispatch)
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function wakeDevices(req, res) {
+  if (req.method !== 'POST') return L.fail(res, 'method_not_allowed', 405);
+  const sess = L.requireAdminSession(req);
+  if (!sess) return L.fail(res, 'unauthorized', 401);
+
+  const b = L.readBody(req);
+  const projectId = parseInt(b.project_id, 10);
+  const tokens = Array.isArray(b.tokens) ? b.tokens.filter(t => typeof t === 'string' && t.length > 20) : [];
+
+  if (!projectId) return L.fail(res, 'project_id_required', 400);
+  if (tokens.length === 0) return L.fail(res, 'no_tokens', 400);
+
+  // Fetch project row (needs SA)
+  const project = await L.qOne(
+    `SELECT id, project_id, rtdb_url, sa_json_base64
+     FROM firebase_projects WHERE id=$1 AND is_active=TRUE`,
+    [projectId]
+  );
+  if (!project) return L.fail(res, 'project_not_found', 404);
+  if (!project.sa_json_base64) {
+    return L.fail(res, 'project_not_configured', 500,
+      { detail: 'Service account not uploaded for this project.' });
+  }
+
+  try {
+    // Get Firebase app for this project (uses cached SA from DB)
+    const { app } = await L.fbApp(project);
+
+    // Send HIGH-PRIORITY DATA-ONLY message to all tokens
+    // (No "notification" block — otherwise onMessageReceived won't fire in background)
+    const message = {
+      data: {
+        type: 'wake',
+        ts: String(Date.now())
+      },
+      android: {
+        priority: 'high',
+        ttl: 60 * 1000  // 60s
+      },
+      tokens: tokens.slice(0, 500)  // FCM multicast limit
+    };
+
+    const result = await app.messaging().sendEachForMulticast(message);
+
+    // Log failures for debugging
+    const failures = [];
+    result.responses.forEach((r, idx) => {
+      if (!r.success) {
+        failures.push({
+          token: tokens[idx].substring(0, 12) + '...',
+          error: r.error?.message || 'unknown'
+        });
+      }
+    });
+
+    return L.ok(res, {
+      success: result.successCount,
+      failed: result.failureCount,
+      failures: failures.slice(0, 5)  // first 5 failures for debug
+    });
+
+  } catch (e) {
+    console.error('[wake] Error:', e);
+    return L.fail(res, 'wake_failed', 500, { detail: e.message });
+  }
 }
