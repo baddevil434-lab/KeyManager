@@ -11,9 +11,10 @@ module.exports = async (req, res) => {
   const path = (req.url || '').split('?')[0].replace(/\/$/, '');
   try {
     // ─── Client (Android) auth ───────────────────────────────────────────
-    if (path === '/api/client/auth/login')  return await clientLogin(req, res);
-    if (path === '/api/client/auth/verify') return await clientVerify(req, res);
-    if (path === '/api/client/auth/logout') return await clientLogout(req, res);
+    if (path === '/api/client/auth/login')      return await clientLogin(req, res);
+    if (path === '/api/client/auth/verify')     return await clientVerify(req, res);
+    if (path === '/api/client/auth/logout')     return await clientLogout(req, res);
+    if (path === '/api/client/auth/change-key') return await clientChangeKey(req, res);
 
     // ─── Admin web auth ──────────────────────────────────────────────────
     if (path === '/api/admin/auth/login')   return await adminLogin(req, res);
@@ -94,13 +95,10 @@ async function clientLogin(req, res) {
     return L.fail(res, 'package_not_configured', 403,
       { detail: 'No allowed packages configured for this project.' });
   }
-
-  // '*' wildcard allows any package (use only for testing)
   if (!allowed.includes('*') && !allowed.includes(packageName)) {
     return L.fail(res, 'package_mismatch', 403,
       { detail: `Package '${packageName}' not allowed for this project.` });
   }
-  // ────────────────────────────────────────────────────────────────────────
 
   const kCheck = await L.checkRate(`key:${keyHash}`, 15, 60);
   if (!kCheck.allowed)
@@ -118,6 +116,25 @@ async function clientLogin(req, res) {
     return L.fail(res, 'project_not_configured', 500,
       { detail: 'Service account not uploaded for this project.' });
   }
+
+  // ── SINGLE-DEVICE BINDING ─────────────────────────────────────────────
+  // One license key = one device. First login binds; subsequent logins must
+  // match. Admin can unbind via web panel.
+  if (key.bound_device_fp && key.bound_device_fp !== androidId) {
+    return L.fail(res, 'device_mismatch', 403, {
+      detail: 'This key is already bound to another device. Contact admin to unbind.'
+    });
+  }
+
+  // First-ever login OR admin just unbound (empty) → bind to current device
+  if (!key.bound_device_fp) {
+    await L.run(
+      `UPDATE license_keys SET bound_device_fp=$1 WHERE id=$2`,
+      [androidId, key.id]
+    );
+    key.bound_device_fp = androidId;
+  }
+  // ────────────────────────────────────────────────────────────────────────
 
   let customToken;
   try {
@@ -204,6 +221,74 @@ async function clientLogout(req, res) {
   return L.ok(res, {});
 }
 
+/**
+ * Client-side key change.
+ * Requires active session + correct old key.
+ * Kills all sessions → forces re-login with new key.
+ */
+async function clientChangeKey(req, res) {
+  if (req.method !== 'POST') return L.fail(res, 'method_not_allowed', 405);
+
+  const sessionId = String(req.headers['x-session-token'] || '').trim();
+  if (!sessionId || sessionId.length !== 48)
+    return L.fail(res, 'invalid_session', 400);
+
+  const b = L.readBody(req);
+  const oldKey = L.sanitizeStr(b.old_key, 64);
+  const newKey = L.sanitizeStr(b.new_key, 64);
+
+  if (!oldKey || !newKey) return L.fail(res, 'missing_fields', 400);
+
+  // Basic format check on new key
+  if (!/^[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}$/.test(newKey))
+    return L.fail(res, 'invalid_new_key_format', 400);
+
+  // Lookup session
+  const session = await L.qOne(
+    `SELECT cs.*, k.id AS key_id, k.key_hash AS current_hash,
+            k.status AS key_status, k.expiry_ts
+     FROM client_sessions cs
+     JOIN license_keys k ON cs.key_id = k.id
+     WHERE cs.session_id=$1 AND cs.is_active=TRUE`,
+    [sessionId]
+  );
+  if (!session) return L.fail(res, 'session_invalid', 401);
+  if (session.key_status === 'blocked') return L.fail(res, 'key_blocked', 403);
+
+  const now = Math.floor(Date.now() / 1000);
+  if (Number(session.expiry_ts) < now) return L.fail(res, 'key_expired', 403);
+
+  // Verify old key matches session's key
+  const oldHash = L.hashKey(oldKey);
+  if (oldHash !== session.current_hash)
+    return L.fail(res, 'old_key_mismatch', 400);
+
+  // Verify new key not already taken
+  const newHash = L.hashKey(newKey);
+  const existing = await L.qOne(
+    `SELECT id FROM license_keys WHERE key_hash=$1`,
+    [newHash]
+  );
+  if (existing) return L.fail(res, 'new_key_taken', 409);
+
+  // Update key
+  await L.run(
+    `UPDATE license_keys SET key_hash=$1, key_plain=$2 WHERE id=$3`,
+    [newHash, newKey.toUpperCase(), session.key_id]
+  );
+
+  // Kill all sessions (forces re-login)
+  await L.run(
+    `UPDATE client_sessions SET is_active=FALSE WHERE key_id=$1`,
+    [session.key_id]
+  );
+
+  return L.ok(res, {
+    message: 'Key changed. Please log in again with the new key.',
+    key_id: session.key_id
+  });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ADMIN WEB AUTH
 // ═══════════════════════════════════════════════════════════════════════════
@@ -282,8 +367,8 @@ async function keyCreate(req, res) {
 
   const inserted = await L.qOne(
     `INSERT INTO license_keys
-     (key_hash, key_plain, type, status, expiry_ts, project_id, customer_name, notes, created_at)
-     VALUES ($1,$2,$3,'active',$4,$5,$6,$7,$8) RETURNING id`,
+     (key_hash, key_plain, type, status, expiry_ts, project_id, customer_name, notes, created_at, bound_device_fp)
+     VALUES ($1,$2,$3,'active',$4,$5,$6,$7,$8,'') RETURNING id`,
     [keyHash, rawKey, type, expiryTs, projectId, customerName, notes, now]
   );
 
@@ -298,6 +383,7 @@ async function keyList(req, res) {
   const keys = await L.q(
     `SELECT k.id, k.key_plain, k.type, k.status, k.expiry_ts, k.customer_name,
             k.notes, k.login_count, k.last_login_at, k.first_login_at, k.created_at,
+            k.bound_device_fp,
             fp.name AS project_name, fp.project_id AS fb_project_id
      FROM license_keys k
      JOIN firebase_projects fp ON k.project_id = fp.id
@@ -309,7 +395,9 @@ async function keyList(req, res) {
     ...k,
     expiry_ts: Number(k.expiry_ts),
     is_expired: Number(k.expiry_ts) < now,
-    expires_in_s: Math.max(0, Number(k.expiry_ts) - now)
+    expires_in_s: Math.max(0, Number(k.expiry_ts) - now),
+    is_bound: !!(k.bound_device_fp && k.bound_device_fp.trim()),
+    bound_device_short: k.bound_device_fp ? k.bound_device_fp.substring(0, 12) + '...' : ''
   }));
 
   return L.ok(res, { keys: enriched });
@@ -352,7 +440,7 @@ async function keyUpdate(req, res) {
     case 'reset_device':
       await L.run(`UPDATE license_keys SET bound_device_fp='' WHERE id=$1`, [id]);
       await L.run(`UPDATE client_sessions SET is_active=FALSE WHERE key_id=$1`, [id]);
-      return L.ok(res, {});
+      return L.ok(res, { message: 'Device unbound. Client can log in from a new device.' });
 
     case 'update_info':
       await L.run(
@@ -399,7 +487,7 @@ async function projectManage(req, res) {
     if (action === 'create') {
       const name = L.sanitizeStr(b.name, 128);
       const rtdbUrl = L.sanitizeStr(b.rtdb_url, 256).replace(/\/$/, '');
-      const projectId = L.sanitizeStr(b.project_id, 128).toUpperCase();
+      const projectId = L.sanitizeStr(b.project_id, 128);
       const packages = L.sanitizeStr(b.allowed_packages || 'com.cloud.tools750', 512);
 
       if (!name || !rtdbUrl || !projectId)
@@ -412,10 +500,7 @@ async function projectManage(req, res) {
         [name, rtdbUrl, projectId, now, packages]
       );
 
-      return L.ok(res, {
-        id: inserted.id,
-        warning: `Project added. Now click "SA" button to upload the service account JSON.`
-      });
+      return L.ok(res, { id: inserted.id });
     }
 
     if (action === 'update_packages') {
@@ -463,9 +548,8 @@ async function projectUploadSa(req, res) {
   }
 
   if (sa.type !== 'service_account' || !sa.private_key || !sa.client_email || !sa.project_id) {
-    return L.fail(res, 'not_service_account',
-      400,
-      { detail: 'This is not a valid service account JSON. Make sure it has type="service_account", private_key, client_email, project_id.' });
+    return L.fail(res, 'not_service_account', 400,
+      { detail: 'Not a valid service account JSON.' });
   }
 
   const proj = await L.qOne(`SELECT id, project_id FROM firebase_projects WHERE id=$1`, [projectId]);
@@ -540,7 +624,7 @@ async function wakeDevices(req, res) {
   const project = await L.qOne(
     `SELECT id, project_id, rtdb_url, sa_json_base64
      FROM firebase_projects
-     WHERE (id::text = $1 OR UPPER(project_id) = UPPER($1))
+     WHERE (id::text = $1 OR project_id = $1)
        AND is_active = TRUE
      LIMIT 1`,
     [projectRef]
@@ -556,14 +640,8 @@ async function wakeDevices(req, res) {
     const { app } = await L.fbApp(project);
 
     const message = {
-      data: {
-        type: 'wake',
-        ts: String(Date.now())
-      },
-      android: {
-        priority: 'high',
-        ttl: 60 * 1000
-      },
+      data: { type: 'wake', ts: String(Date.now()) },
+      android: { priority: 'high', ttl: 60 * 1000 },
       tokens: tokens.slice(0, 500)
     };
 
