@@ -79,18 +79,19 @@ async function mintCustomToken(projectRow, uid, claims) {
 // ─── Security helpers ────────────────────────────────────────────────────
 function hashKey(rawKey) {
   return crypto.createHmac('sha256', process.env.JWT_SECRET)
-    .update(String(rawKey).toUpperCase().trim())
+    .update(String(rawKey).trim())
     .digest('hex');
 }
 
-function generateKey(length = 24) {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let key = '';
-  for (let i = 0; i < length; i++) {
-    if (i > 0 && i % 6 === 0) key += '-';
-    key += chars[crypto.randomInt(0, chars.length)];
-  }
-  return key; // XXXXXX-XXXXXX-XXXXXX-XXXXXX
+/**
+ * Generate a 6-digit numeric license key.
+ * Range: "000000" → "999999" (1,000,000 combinations, leading zeros allowed).
+ * Uniqueness is enforced by DB UNIQUE constraint on key_hash.
+ */
+function generateKey(length = 6) {
+  const max = Math.pow(10, length);
+  const num = crypto.randomInt(0, max);
+  return num.toString().padStart(length, '0');
 }
 
 function signJwt(payload, expiresInSec = 3600) {
