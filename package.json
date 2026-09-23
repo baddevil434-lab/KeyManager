@@ -1,0 +1,12 @@
+{
+  "name": "keymanager-backend",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "firebase-admin": "^12.6.0",
+    "pg": "^8.13.1",
+    "@upstash/redis": "^1.34.3",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3"
+  }
+}
