@@ -159,7 +159,9 @@ function getCookie(req, name) {
 }
 
 function requireAdminSession(req) {
-  const token = getCookie(req, 'admin_session');
+  // Try cookie first (web), then header (Android)
+  let token = getCookie(req, 'admin_session');
+  if (!token) token = req.headers['x-admin-session'] || '';
   if (!token) return null;
   const sess = verifyJwt(token);
   if (!sess || sess.role !== 'admin') return null;
