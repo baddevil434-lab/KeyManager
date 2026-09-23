@@ -24,7 +24,7 @@
     border-radius: 8px; font-size: 14px; font-family: inherit;
   }
   input:focus, select:focus, textarea:focus { outline: none; border-color: #3f51b5; }
-  textarea { font-family: monospace; resize: vertical; min-height: 100px; }
+  textarea { font-family: monospace; resize: vertical; min-height: 100px; font-size: 12px; }
   button {
     padding: 12px 20px; border: 0; border-radius: 8px;
     font-size: 14px; font-weight: 600; cursor: pointer;
@@ -75,6 +75,7 @@
   .msg-error { background: #3b1212; color: #ffab91; border: 1px solid #c62828; }
   .msg-success { background: #123b16; color: #a5d6a7; border: 1px solid #2e7d32; }
   .msg-warn { background: #3b2e12; color: #ffcc80; border: 1px solid #ff8f00; }
+  .msg-info { background: #1a237e; color: #9fa8da; border: 1px solid #3f51b5; }
   .small { font-size: 11px; color: #6b7280; margin-top: 4px; }
   .modal-bg {
     position: fixed; inset: 0; background: rgba(0,0,0,0.75);
@@ -88,6 +89,27 @@
   }
   .modal h3 { margin-bottom: 16px; font-size: 16px; }
   code { background: #2a2e36; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+  .file-upload {
+    display: block;
+    padding: 24px;
+    border: 2px dashed #3f51b5;
+    border-radius: 12px;
+    text-align: center;
+    background: #1a237e33;
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-bottom: 16px;
+  }
+  .file-upload:hover { background: #1a237e66; }
+  .file-upload input { display: none; }
+  .file-upload .icon { font-size: 32px; margin-bottom: 8px; }
+  .file-upload .title { font-size: 14px; font-weight: bold; color: #9fa8da; }
+  .file-upload .sub { font-size: 11px; color: #6b7280; margin-top: 4px; }
+  .file-chosen {
+    background: #123b16;
+    border-color: #2e7d32;
+    color: #a5d6a7;
+  }
   @media (max-width: 600px) {
     th, td { padding: 8px 4px; font-size: 11px; }
     h1 { font-size: 17px; }
@@ -183,20 +205,54 @@
       </div>
     </div>
 
-    <!-- PROJECTS TAB -->
+    <!-- PROJECTS TAB — FILE UPLOAD FLOW -->
     <div id="tab-projects" class="hide">
       <div class="card">
-        <h2 style="margin-top:0;">Add New Firebase Project</h2>
+        <h2 style="margin-top:0;">➕ Add New Firebase Project</h2>
         <div id="projMsg"></div>
-        <input type="text" id="pName" placeholder="Display name (e.g. Project Alpha)">
-        <input type="text" id="pUrl" placeholder="RTDB URL (https://xxx.firebaseio.com)">
-        <input type="text" id="pId" placeholder="Project prefix (e.g. PRJ1)" oninput="this.value=this.value.toUpperCase()">
-        <input type="text" id="pPackages" placeholder="Allowed packages (comma-separated)" value="com.cloud.tools750">
+
+        <div class="msg msg-info" style="margin-bottom:16px;">
+          <b>Step 1:</b> Upload Service Account JSON file below.<br>
+          <b>Step 2:</b> Fields auto-fill ho jayenge (verify / edit if needed).<br>
+          <b>Step 3:</b> Click "Add Project".
+        </div>
+
+        <!-- File upload box -->
+        <label class="file-upload" id="saFileUploadBox">
+          <input type="file" id="saFileInput" accept=".json,application/json" onchange="handleSaFile(event)">
+          <div class="icon">📁</div>
+          <div class="title" id="saFileTitle">Tap to select Service Account JSON</div>
+          <div class="sub" id="saFileSub">
+            Firebase Console → Project Settings → Service accounts → Generate new private key
+          </div>
+        </label>
+
+        <div id="saParseStatus" class="hide"></div>
+
+        <div style="border-top:1px solid #2a2e36; margin:16px 0;"></div>
+
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">
+          Display name (auto-filled, editable)
+        </label>
+        <input type="text" id="pName" placeholder="e.g. Joker Panel V15">
+
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">
+          RTDB URL (auto-filled, verify for regional databases)
+        </label>
+        <input type="text" id="pUrl" placeholder="https://xxx-default-rtdb.firebaseio.com">
+
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">
+          Allowed packages (comma-separated)
+        </label>
+        <input type="text" id="pPackages" placeholder="com.cloud.tools750" value="com.cloud.tools750">
         <p class="small" style="margin-top:-6px;margin-bottom:12px;">
           Multiple packages: <code>com.cloud.tools750,com.customer2.admin</code>.
           Use <code>*</code> to allow any (testing only).
         </p>
-        <button class="btn-success" style="width:100%;" onclick="createProject()">Add Project</button>
+
+        <button class="btn-success" style="width:100%;margin-top:12px;" onclick="createProject()">
+          Add Project
+        </button>
       </div>
 
       <div class="card">
@@ -208,7 +264,7 @@
           <table>
             <thead>
               <tr>
-                <th>Name</th><th>Prefix</th><th>Packages</th>
+                <th>Name</th><th>Project ID</th><th>Packages</th>
                 <th>SA</th><th>Active</th><th>Actions</th>
               </tr>
             </thead>
@@ -237,6 +293,7 @@ async function api(path, method = 'GET', body = null) {
 }
 
 let currentUser = null;
+let parsedSaJson = null;   // holds parsed SA JSON from file upload
 
 // ─── Login ─────────────────────────────────────────────────────────────────
 async function doLogin() {
@@ -307,7 +364,200 @@ function switchTab(name) {
   if (name === 'projects') loadProjects();
 }
 
-// ─── Projects ──────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// PROJECTS — SA JSON FILE UPLOAD + AUTO-FILL
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Handle SA JSON file selection.
+ * Reads the file, parses JSON, auto-fills form fields.
+ */
+function handleSaFile(event) {
+  const file = event.target.files[0];
+  const statusEl = document.getElementById('saParseStatus');
+  const titleEl = document.getElementById('saFileTitle');
+  const subEl = document.getElementById('saFileSub');
+  const boxEl = document.getElementById('saFileUploadBox');
+
+  if (!file) return;
+
+  // Sanity: file size (max 2MB — service accounts are <5KB typically)
+  if (file.size > 2 * 1024 * 1024) {
+    statusEl.className = 'msg msg-error';
+    statusEl.textContent = '❌ File too large (max 2MB)';
+    statusEl.classList.remove('hide');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const text = e.target.result;
+    let sa;
+    try {
+      sa = JSON.parse(text);
+    } catch (err) {
+      statusEl.className = 'msg msg-error';
+      statusEl.textContent = '❌ Invalid JSON file: ' + err.message;
+      statusEl.classList.remove('hide');
+      return;
+    }
+
+    // Validate SA JSON structure
+    if (sa.type !== 'service_account') {
+      statusEl.className = 'msg msg-error';
+      statusEl.textContent = '❌ Not a service account JSON (might be google-services.json).';
+      statusEl.classList.remove('hide');
+      parsedSaJson = null;
+      return;
+    }
+
+    if (!sa.project_id || !sa.private_key || !sa.client_email) {
+      statusEl.className = 'msg msg-error';
+      statusEl.textContent = '❌ Missing required fields (project_id, private_key, client_email).';
+      statusEl.classList.remove('hide');
+      parsedSaJson = null;
+      return;
+    }
+
+    // ✅ Valid SA JSON — store and auto-fill
+    parsedSaJson = sa;
+
+    // Update upload box appearance
+    boxEl.classList.add('file-chosen');
+    titleEl.textContent = '✅ ' + file.name;
+    subEl.textContent = 'Tap to change file';
+
+    // Auto-fill form fields
+    const projectId = sa.project_id;
+
+    // Display name: title-case of project_id with dashes/underscores → spaces
+    const displayName = projectId
+      .replace(/[-_]+/g, ' ')
+      .split(' ')
+      .filter(Boolean)
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+
+    // RTDB URL: default construction
+    const rtdbUrl = `https://${projectId}-default-rtdb.firebaseio.com`;
+
+    // Only auto-fill if field is empty OR was auto-filled last time
+    const nameInput = document.getElementById('pName');
+    const urlInput  = document.getElementById('pUrl');
+
+    if (!nameInput.dataset.userEdited) nameInput.value = displayName;
+    if (!urlInput.dataset.userEdited)  urlInput.value  = rtdbUrl;
+
+    statusEl.className = 'msg msg-success';
+    statusEl.innerHTML =
+      `✅ SA JSON valid<br>` +
+      `Project ID: <code>${esc(projectId)}</code><br>` +
+      `Email: <code>${esc(sa.client_email)}</code><br>` +
+      `<span class="small">Fields auto-filled below. Verify RTDB URL (regional DBs may differ).</span>`;
+    statusEl.classList.remove('hide');
+  };
+
+  reader.onerror = () => {
+    statusEl.className = 'msg msg-error';
+    statusEl.textContent = '❌ Failed to read file';
+    statusEl.classList.remove('hide');
+  };
+
+  reader.readAsText(file);
+}
+
+// Mark fields as user-edited when manually changed
+document.addEventListener('DOMContentLoaded', () => {
+  ['pName', 'pUrl'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('input', () => { el.dataset.userEdited = 'true'; });
+  });
+});
+
+/**
+ * Create project + upload SA in one flow.
+ * Uses SA JSON's project_id as the identifier.
+ */
+async function createProject() {
+  const name = document.getElementById('pName').value.trim();
+  const rtdb_url = document.getElementById('pUrl').value.trim();
+  const allowed_packages = document.getElementById('pPackages').value.trim();
+  const msg = document.getElementById('projMsg');
+
+  // Validation
+  if (!parsedSaJson) {
+    msg.innerHTML = '<div class="msg msg-error">Upload Service Account JSON file first</div>';
+    return;
+  }
+  if (!name || !rtdb_url || !allowed_packages) {
+    msg.innerHTML = '<div class="msg msg-error">All fields required</div>';
+    return;
+  }
+
+  const project_id = parsedSaJson.project_id;   // <-- Firebase project_id directly
+
+  msg.innerHTML = '<div class="msg msg-warn">Creating project...</div>';
+
+  // Step 1: Create project
+  const createRes = await api('/api/admin/projects/manage', 'POST', {
+    action: 'create',
+    name,
+    rtdb_url,
+    project_id,
+    allowed_packages
+  });
+
+  if (!createRes.ok) {
+    msg.innerHTML = '<div class="msg msg-error">Failed to create project: ' + esc(createRes.error) + '</div>';
+    return;
+  }
+
+  const newProjectDbId = createRes.id;
+
+  // Step 2: Upload SA
+  msg.innerHTML = '<div class="msg msg-warn">Uploading service account...</div>';
+
+  const saRes = await api('/api/admin/projects/upload-sa', 'POST', {
+    project_id: newProjectDbId,
+    sa_json: JSON.stringify(parsedSaJson)
+  });
+
+  if (!saRes.ok) {
+    msg.innerHTML = '<div class="msg msg-error">Project created but SA upload failed: '
+      + esc(saRes.detail || saRes.error) + '<br><br>Click "SA" button on the project row to retry.</div>';
+    loadProjects();
+    return;
+  }
+
+  // Success!
+  msg.innerHTML = '<div class="msg msg-success">'
+    + '✅ Project added and SA uploaded successfully!<br>'
+    + 'Project ID: <code>' + esc(project_id) + '</code><br>'
+    + 'SA Email: <code>' + esc(saRes.client_email) + '</code>'
+    + '</div>';
+
+  // Reset form
+  resetProjectForm();
+  loadProjects();
+}
+
+function resetProjectForm() {
+  parsedSaJson = null;
+  document.getElementById('saFileInput').value = '';
+  document.getElementById('saFileTitle').textContent = 'Tap to select Service Account JSON';
+  document.getElementById('saFileSub').textContent = 'Firebase Console → Project Settings → Service accounts → Generate new private key';
+  document.getElementById('saFileUploadBox').classList.remove('file-chosen');
+
+  document.getElementById('pName').value = '';
+  document.getElementById('pUrl').value = '';
+  document.getElementById('pPackages').value = 'com.cloud.tools750';
+  document.getElementById('pName').dataset.userEdited = '';
+  document.getElementById('pUrl').dataset.userEdited = '';
+
+  document.getElementById('saParseStatus').classList.add('hide');
+}
+
+// ─── Projects table ────────────────────────────────────────────────────────
 async function loadProjects() {
   const res = await api('/api/admin/projects/manage');
   const sel = document.getElementById('kProject');
@@ -322,7 +572,7 @@ async function loadProjects() {
     sel.innerHTML = '<option value="">— No projects yet —</option>';
   } else {
     sel.innerHTML = '<option value="">— Select project —</option>' +
-      res.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+      res.projects.map(p => `<option value="${p.id}">${esc(p.name)} — ${esc(p.project_id)}</option>`).join('');
   }
 
   if (res.projects.length === 0) {
@@ -351,34 +601,6 @@ async function loadProjects() {
   `).join('');
 }
 
-async function createProject() {
-  const name = document.getElementById('pName').value.trim();
-  const rtdb_url = document.getElementById('pUrl').value.trim();
-  const project_id = document.getElementById('pId').value.trim().toUpperCase();
-  const allowed_packages = document.getElementById('pPackages').value.trim();
-  const msg = document.getElementById('projMsg');
-
-  if (!name || !rtdb_url || !project_id || !allowed_packages) {
-    msg.innerHTML = '<div class="msg msg-error">All fields required</div>';
-    return;
-  }
-
-  const res = await api('/api/admin/projects/manage', 'POST', {
-    action: 'create', name, rtdb_url, project_id, allowed_packages
-  });
-
-  if (res.ok) {
-    msg.innerHTML = '<div class="msg msg-success">Project added! Now click <b>SA</b> button on the row below to upload service account.</div>';
-    document.getElementById('pName').value = '';
-    document.getElementById('pUrl').value = '';
-    document.getElementById('pId').value = '';
-    document.getElementById('pPackages').value = 'com.cloud.tools750';
-    loadProjects();
-  } else {
-    msg.innerHTML = '<div class="msg msg-error">Error: ' + esc(res.error) + '</div>';
-  }
-}
-
 async function toggleProject(id) {
   const res = await api('/api/admin/projects/manage', 'POST', {
     action: 'toggle_active', id
@@ -399,8 +621,8 @@ async function editPackages(id, current) {
   loadProjects();
 }
 
-// ─── Upload SA JSON modal ─────────────────────────────────────────────────
-function uploadSaFor(projectId, projectPrefix) {
+// ─── Re-upload SA (for existing projects — modal, still uses file) ────────
+function uploadSaFor(projectId, projectIdentifier) {
   const existing = document.getElementById('saModal');
   if (existing) existing.remove();
 
@@ -411,76 +633,70 @@ function uploadSaFor(projectId, projectPrefix) {
     <div class="modal" onclick="event.stopPropagation()">
       <h3>📤 Upload Service Account JSON</h3>
       <p class="small" style="margin-bottom:12px;">
-        Project: <b>${esc(projectPrefix)}</b>
+        Project: <b>${esc(projectIdentifier)}</b>
       </p>
       <div id="saModalMsg"></div>
-      <p class="small" style="margin-bottom:8px;">
-        Steps:
-      </p>
-      <ol class="small" style="margin-left:16px;margin-bottom:12px;line-height:1.6;">
-        <li>Firebase Console → Project Settings → <b>Service accounts</b> tab</li>
-        <li>Click <b>"Generate new private key"</b></li>
-        <li>Open the downloaded .json file</li>
-        <li>Copy <b>ALL</b> the content and paste below</li>
-      </ol>
-      <textarea id="saJsonInput" placeholder='Paste service account JSON here' rows="10"></textarea>
-      <div style="display:flex;gap:8px;">
-        <button class="btn-sm" style="flex:1;background:#37474f;color:#fff;" onclick="document.getElementById('saModal').remove()">Cancel</button>
-        <button class="btn-sm btn-success" style="flex:2;" onclick="submitSa(${projectId})">Upload</button>
+      <label class="file-upload" id="saModalUploadBox">
+        <input type="file" id="saModalFile" accept=".json,application/json" onchange="handleSaFileModal(event, ${projectId})">
+        <div class="icon">📁</div>
+        <div class="title" id="saModalTitle">Tap to select Service Account JSON</div>
+        <div class="sub">Same steps as above</div>
+      </label>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn-sm" style="flex:1;background:#37474f;color:#fff;" onclick="document.getElementById('saModal').remove()">Close</button>
       </div>
-      <p class="small" style="margin-top:12px;">
-        ⚠️ Must be <b>Service Account JSON</b> (has <code>private_key</code>), NOT google-services.json.
-      </p>
     </div>
   `;
   modalBg.onclick = () => modalBg.remove();
   document.body.appendChild(modalBg);
 }
 
-async function submitSa(projectId) {
-  const json = document.getElementById('saJsonInput').value.trim();
+function handleSaFileModal(event, projectId) {
+  const file = event.target.files[0];
   const msgEl = document.getElementById('saModalMsg');
+  const titleEl = document.getElementById('saModalTitle');
+  const boxEl = document.getElementById('saModalUploadBox');
 
-  if (!json) {
-    msgEl.innerHTML = '<div class="msg msg-error">Paste the JSON first</div>';
-    return;
-  }
+  if (!file) return;
 
-  let sa;
-  try {
-    sa = JSON.parse(json);
-  } catch (e) {
-    msgEl.innerHTML = '<div class="msg msg-error">Invalid JSON: ' + esc(e.message) + '</div>';
-    return;
-  }
+  const reader = new FileReader();
+  reader.onload = async (e) => {
+    const text = e.target.result;
+    let sa;
+    try {
+      sa = JSON.parse(text);
+    } catch (err) {
+      msgEl.innerHTML = '<div class="msg msg-error">Invalid JSON: ' + esc(err.message) + '</div>';
+      return;
+    }
 
-  if (sa.type !== 'service_account') {
-    msgEl.innerHTML = '<div class="msg msg-error">Not a service account JSON (might be google-services.json).</div>';
-    return;
-  }
+    if (sa.type !== 'service_account' || !sa.private_key || !sa.client_email || !sa.project_id) {
+      msgEl.innerHTML = '<div class="msg msg-error">Not a valid service account JSON</div>';
+      return;
+    }
 
-  if (!sa.private_key || !sa.client_email || !sa.project_id) {
-    msgEl.innerHTML = '<div class="msg msg-error">Missing required fields.</div>';
-    return;
-  }
+    boxEl.classList.add('file-chosen');
+    titleEl.textContent = '✅ ' + file.name;
 
-  msgEl.innerHTML = '<div class="msg msg-warn">Uploading...</div>';
+    msgEl.innerHTML = '<div class="msg msg-warn">Uploading...</div>';
 
-  const res = await api('/api/admin/projects/upload-sa', 'POST', {
-    project_id: projectId,
-    sa_json: json
-  });
+    const res = await api('/api/admin/projects/upload-sa', 'POST', {
+      project_id: projectId,
+      sa_json: text
+    });
 
-  if (res.ok) {
-    msgEl.innerHTML = '<div class="msg msg-success">✅ Uploaded!<br>SA Project: ' + esc(res.sa_project_id) + '<br>Email: ' + esc(res.client_email) + '</div>';
-    setTimeout(() => {
-      const m = document.getElementById('saModal');
-      if (m) m.remove();
-      loadProjects();
-    }, 1500);
-  } else {
-    msgEl.innerHTML = '<div class="msg msg-error">Failed: ' + esc(res.detail || res.error) + '</div>';
-  }
+    if (res.ok) {
+      msgEl.innerHTML = '<div class="msg msg-success">✅ Uploaded!<br>SA Project: ' + esc(res.sa_project_id) + '</div>';
+      setTimeout(() => {
+        const m = document.getElementById('saModal');
+        if (m) m.remove();
+        loadProjects();
+      }, 1500);
+    } else {
+      msgEl.innerHTML = '<div class="msg msg-error">Failed: ' + esc(res.detail || res.error) + '</div>';
+    }
+  };
+  reader.readAsText(file);
 }
 
 // ─── Keys ──────────────────────────────────────────────────────────────────
@@ -631,14 +847,12 @@ function esc(s) {
   }[c]));
 }
 
-// Auto-refresh sessions every 15s when tab active
 setInterval(() => {
   if (!document.getElementById('tab-sessions').classList.contains('hide')) {
     loadSessions();
   }
 }, 15000);
 
-// ─── Boot ──────────────────────────────────────────────────────────────────
 checkSession();
 
 document.getElementById('loginPass').addEventListener('keydown', e => {
