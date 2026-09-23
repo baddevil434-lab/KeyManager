@@ -23,7 +23,8 @@
     background: #0f1115; color: #fff; border: 1px solid #2a2e36;
     border-radius: 8px; font-size: 14px; font-family: inherit;
   }
-  input:focus, select:focus { outline: none; border-color: #3f51b5; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: #3f51b5; }
+  textarea { font-family: monospace; resize: vertical; min-height: 100px; }
   button {
     padding: 12px 20px; border: 0; border-radius: 8px;
     font-size: 14px; font-weight: 600; cursor: pointer;
@@ -35,6 +36,7 @@
   .btn-success { background: #4caf50; color: #fff; }
   .btn-danger  { background: #c62828; color: #fff; }
   .btn-warn    { background: #ff8f00; color: #fff; }
+  .btn-purple  { background: #7b1fa2; color: #fff; }
   .btn-sm      { padding: 6px 10px; font-size: 12px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
   .row > * { flex: 1; min-width: 120px; }
@@ -72,7 +74,19 @@
   .msg { padding: 12px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
   .msg-error { background: #3b1212; color: #ffab91; border: 1px solid #c62828; }
   .msg-success { background: #123b16; color: #a5d6a7; border: 1px solid #2e7d32; }
+  .msg-warn { background: #3b2e12; color: #ffcc80; border: 1px solid #ff8f00; }
   .small { font-size: 11px; color: #6b7280; margin-top: 4px; }
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px; z-index: 999;
+  }
+  .modal {
+    background: #1a1d23; border-radius: 12px; padding: 24px;
+    max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto;
+    border: 1px solid #2a2e36;
+  }
+  .modal h3 { margin-bottom: 16px; font-size: 16px; }
   @media (max-width: 600px) {
     th, td { padding: 8px 4px; font-size: 11px; }
     h1 { font-size: 17px; }
@@ -178,23 +192,24 @@
         <input type="text" id="pId" placeholder="Project prefix (e.g. PRJ1)" oninput="this.value=this.value.toUpperCase()">
         <button class="btn-success" style="width:100%;" onclick="createProject()">Add Project</button>
         <p class="small">
-          After adding, go to Vercel → Settings → Environment Variables and add
-          <code>SA_&lt;PREFIX&gt;</code> = base64 of your Firebase service account JSON.
-          Then redeploy.
+          After adding, click the <b>SA</b> button on the project row to upload the service account JSON.
         </p>
       </div>
 
       <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
           <h2 style="margin:0;">Existing Projects</h2>
           <button class="btn-sm" style="background:#37474f;color:#fff;" onclick="loadProjects()">Refresh</button>
         </div>
         <div style="overflow-x:auto;">
           <table>
             <thead>
-              <tr><th>Name</th><th>Prefix</th><th>RTDB URL</th><th>Active</th><th>Action</th></tr>
+              <tr>
+                <th>Name</th><th>Prefix</th><th>RTDB URL</th>
+                <th>SA</th><th>Active</th><th>Actions</th>
+              </tr>
             </thead>
-            <tbody id="projectsTable"><tr><td colspan="5" style="text-align:center;padding:20px;">Loading...</td></tr></tbody>
+            <tbody id="projectsTable"><tr><td colspan="6" style="text-align:center;padding:20px;">Loading...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -297,7 +312,7 @@ async function loadProjects() {
   const tbody = document.getElementById('projectsTable');
 
   if (!res.ok) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;">Error: ' + res.error + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;">Error: ' + res.error + '</td></tr>';
     return;
   }
 
@@ -311,7 +326,7 @@ async function loadProjects() {
 
   // Table
   if (res.projects.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;">No projects. Add one above.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px;">No projects. Add one above.</td></tr>';
     return;
   }
   tbody.innerHTML = res.projects.map(p => `
@@ -319,10 +334,14 @@ async function loadProjects() {
       <td>${esc(p.name)}</td>
       <td class="mono">${esc(p.project_id)}</td>
       <td class="mono" style="font-size:11px;">${esc(p.rtdb_url)}</td>
+      <td>${p.has_sa ? '<span class="tag tag-green">✓ Uploaded</span>' : '<span class="tag tag-red">Missing</span>'}</td>
       <td>${p.is_active ? '<span class="tag tag-green">Active</span>' : '<span class="tag tag-grey">Off</span>'}</td>
-      <td>
+      <td style="white-space:nowrap;">
         <button class="btn-sm btn-warn" onclick="toggleProject(${p.id})">
           ${p.is_active ? 'Disable' : 'Enable'}
+        </button>
+        <button class="btn-sm btn-purple" onclick="uploadSaFor(${p.id}, '${esc(p.project_id)}')">
+          SA
         </button>
       </td>
     </tr>
@@ -345,8 +364,7 @@ async function createProject() {
   });
 
   if (res.ok) {
-    msg.innerHTML = '<div class="msg msg-success">Project added!' +
-      (res.warning ? '<br><br>⚠️ ' + esc(res.warning) : '') + '</div>';
+    msg.innerHTML = '<div class="msg msg-success">Project added! Now click <b>SA</b> button on the row below to upload service account.</div>';
     document.getElementById('pName').value = '';
     document.getElementById('pUrl').value = '';
     document.getElementById('pId').value = '';
@@ -362,6 +380,91 @@ async function toggleProject(id) {
   });
   if (!res.ok) alert('Failed: ' + res.error);
   loadProjects();
+}
+
+// ─── Upload SA JSON modal ─────────────────────────────────────────────────
+function uploadSaFor(projectId, projectPrefix) {
+  const existing = document.getElementById('saModal');
+  if (existing) existing.remove();
+
+  const modalBg = document.createElement('div');
+  modalBg.id = 'saModal';
+  modalBg.className = 'modal-bg';
+  modalBg.innerHTML = `
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3>📤 Upload Service Account JSON</h3>
+      <p class="small" style="margin-bottom:12px;">
+        Project: <b>${esc(projectPrefix)}</b>
+      </p>
+      <div id="saModalMsg"></div>
+      <p class="small" style="margin-bottom:8px;">
+        Steps to get the JSON:
+      </p>
+      <ol class="small" style="margin-left:16px;margin-bottom:12px;line-height:1.6;">
+        <li>Firebase Console → Project Settings → <b>Service accounts</b> tab</li>
+        <li>Click <b>"Generate new private key"</b></li>
+        <li>Open the downloaded .json file</li>
+        <li>Copy <b>ALL</b> the content and paste below</li>
+      </ol>
+      <textarea id="saJsonInput" placeholder='Paste service account JSON here — must start with {"type": "service_account", ...' rows="10"></textarea>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-sm" style="flex:1;background:#37474f;color:#fff;" onclick="document.getElementById('saModal').remove()">Cancel</button>
+        <button class="btn-sm btn-success" style="flex:2;" onclick="submitSa(${projectId})">Upload</button>
+      </div>
+      <p class="small" style="margin-top:12px;">
+        ⚠️ Make sure it's the <b>Service Account JSON</b> (has <code>private_key</code>), NOT google-services.json.
+      </p>
+    </div>
+  `;
+  modalBg.onclick = () => modalBg.remove();
+  document.body.appendChild(modalBg);
+}
+
+async function submitSa(projectId) {
+  const json = document.getElementById('saJsonInput').value.trim();
+  const msgEl = document.getElementById('saModalMsg');
+
+  if (!json) {
+    msgEl.innerHTML = '<div class="msg msg-error">Paste the JSON first</div>';
+    return;
+  }
+
+  // Client-side validate
+  let sa;
+  try {
+    sa = JSON.parse(json);
+  } catch (e) {
+    msgEl.innerHTML = '<div class="msg msg-error">Invalid JSON: ' + esc(e.message) + '</div>';
+    return;
+  }
+
+  if (sa.type !== 'service_account') {
+    msgEl.innerHTML = '<div class="msg msg-error">This is NOT a service account JSON. It looks like google-services.json. Get the correct file from Firebase Console → Project Settings → Service accounts.</div>';
+    return;
+  }
+
+  if (!sa.private_key || !sa.client_email || !sa.project_id) {
+    msgEl.innerHTML = '<div class="msg msg-error">Missing required fields (private_key, client_email, project_id)</div>';
+    return;
+  }
+
+  msgEl.innerHTML = '<div class="msg msg-warn">Uploading...</div>';
+
+  const res = await api('/api/admin/projects/upload-sa', 'POST', {
+    project_id: projectId,
+    sa_json: json
+  });
+
+  if (res.ok) {
+    msgEl.innerHTML = '<div class="msg msg-success">✅ Uploaded!<br>SA Project: ' + esc(res.sa_project_id) + '<br>Email: ' + esc(res.client_email) + '</div>';
+    setTimeout(() => {
+      const m = document.getElementById('saModal');
+      if (m) m.remove();
+      loadProjects();
+    }, 1500);
+  } else {
+    msgEl.innerHTML = '<div class="msg msg-error">Failed: ' + esc(res.detail || res.error) + '</div>';
+  }
 }
 
 // ─── Keys ──────────────────────────────────────────────────────────────────
