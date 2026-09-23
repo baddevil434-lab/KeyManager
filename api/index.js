@@ -118,15 +118,12 @@ async function clientLogin(req, res) {
   }
 
   // ── SINGLE-DEVICE BINDING ─────────────────────────────────────────────
-  // One license key = one device. First login binds; subsequent logins must
-  // match. Admin can unbind via web panel.
   if (key.bound_device_fp && key.bound_device_fp !== androidId) {
     return L.fail(res, 'device_mismatch', 403, {
       detail: 'This key is already bound to another device. Contact admin to unbind.'
     });
   }
 
-  // First-ever login OR admin just unbound (empty) → bind to current device
   if (!key.bound_device_fp) {
     await L.run(
       `UPDATE license_keys SET bound_device_fp=$1 WHERE id=$2`,
@@ -224,6 +221,7 @@ async function clientLogout(req, res) {
 /**
  * Client-side key change.
  * Requires active session + correct old key.
+ * New key must be exactly 6 digits.
  * Kills all sessions → forces re-login with new key.
  */
 async function clientChangeKey(req, res) {
@@ -239,9 +237,10 @@ async function clientChangeKey(req, res) {
 
   if (!oldKey || !newKey) return L.fail(res, 'missing_fields', 400);
 
-  // Basic format check on new key
-  if (!/^[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}$/.test(newKey))
-    return L.fail(res, 'invalid_new_key_format', 400);
+  // New key must be exactly 6 digits (0-9)
+  if (!/^\d{6}$/.test(newKey))
+    return L.fail(res, 'invalid_new_key_format', 400,
+      { detail: 'New key must be exactly 6 digits (0-9).' });
 
   // Lookup session
   const session = await L.qOne(
@@ -274,7 +273,7 @@ async function clientChangeKey(req, res) {
   // Update key
   await L.run(
     `UPDATE license_keys SET key_hash=$1, key_plain=$2 WHERE id=$3`,
-    [newHash, newKey.toUpperCase(), session.key_id]
+    [newHash, newKey, session.key_id]
   );
 
   // Kill all sessions (forces re-login)
@@ -360,17 +359,38 @@ async function keyCreate(req, res) {
   );
   if (!project) return L.fail(res, 'project_not_found', 404);
 
-  const rawKey = L.generateKey();
-  const keyHash = L.hashKey(rawKey);
   const now = Math.floor(Date.now() / 1000);
   const expiryTs = now + (expiryDays * 86400);
 
-  const inserted = await L.qOne(
-    `INSERT INTO license_keys
-     (key_hash, key_plain, type, status, expiry_ts, project_id, customer_name, notes, created_at, bound_device_fp)
-     VALUES ($1,$2,$3,'active',$4,$5,$6,$7,$8,'') RETURNING id`,
-    [keyHash, rawKey, type, expiryTs, projectId, customerName, notes, now]
-  );
+  // 6-digit numeric key → only 1M combinations.
+  // Collision possible → retry up to 10 times.
+  let inserted = null;
+  let rawKey = '';
+  for (let attempt = 0; attempt < 10; attempt++) {
+    rawKey = L.generateKey();
+    const keyHash = L.hashKey(rawKey);
+    try {
+      inserted = await L.qOne(
+        `INSERT INTO license_keys
+         (key_hash, key_plain, type, status, expiry_ts, project_id, customer_name, notes, created_at, bound_device_fp)
+         VALUES ($1,$2,$3,'active',$4,$5,$6,$7,$8,'') RETURNING id`,
+        [keyHash, rawKey, type, expiryTs, projectId, customerName, notes, now]
+      );
+      break; // success
+    } catch (e) {
+      // PostgreSQL unique_violation code: 23505
+      if (e.code === '23505') {
+        // Collision — try another 6-digit key
+        continue;
+      }
+      throw e; // other errors bubble up to global handler
+    }
+  }
+
+  if (!inserted) {
+    return L.fail(res, 'key_generation_failed', 500,
+      { detail: 'Could not generate a unique key after multiple attempts. Try again.' });
+  }
 
   return L.ok(res, {
     id: inserted.id, key: rawKey, type, expiry_ts: expiryTs
