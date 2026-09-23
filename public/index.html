@@ -87,6 +87,7 @@
     border: 1px solid #2a2e36;
   }
   .modal h3 { margin-bottom: 16px; font-size: 16px; }
+  code { background: #2a2e36; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
   @media (max-width: 600px) {
     th, td { padding: 8px 4px; font-size: 11px; }
     h1 { font-size: 17px; }
@@ -190,10 +191,12 @@
         <input type="text" id="pName" placeholder="Display name (e.g. Project Alpha)">
         <input type="text" id="pUrl" placeholder="RTDB URL (https://xxx.firebaseio.com)">
         <input type="text" id="pId" placeholder="Project prefix (e.g. PRJ1)" oninput="this.value=this.value.toUpperCase()">
-        <button class="btn-success" style="width:100%;" onclick="createProject()">Add Project</button>
-        <p class="small">
-          After adding, click the <b>SA</b> button on the project row to upload the service account JSON.
+        <input type="text" id="pPackages" placeholder="Allowed packages (comma-separated)" value="com.cloud.tools750">
+        <p class="small" style="margin-top:-6px;margin-bottom:12px;">
+          Multiple packages: <code>com.cloud.tools750,com.customer2.admin</code>.
+          Use <code>*</code> to allow any (testing only).
         </p>
+        <button class="btn-success" style="width:100%;" onclick="createProject()">Add Project</button>
       </div>
 
       <div class="card">
@@ -205,7 +208,7 @@
           <table>
             <thead>
               <tr>
-                <th>Name</th><th>Prefix</th><th>RTDB URL</th>
+                <th>Name</th><th>Prefix</th><th>Packages</th>
                 <th>SA</th><th>Active</th><th>Actions</th>
               </tr>
             </thead>
@@ -233,7 +236,6 @@ async function api(path, method = 'GET', body = null) {
   catch { return { ok: false, error: 'bad_response', raw: text }; }
 }
 
-// ─── Session state ─────────────────────────────────────────────────────────
 let currentUser = null;
 
 // ─── Login ─────────────────────────────────────────────────────────────────
@@ -316,7 +318,6 @@ async function loadProjects() {
     return;
   }
 
-  // Populate dropdown
   if (res.projects.length === 0) {
     sel.innerHTML = '<option value="">— No projects yet —</option>';
   } else {
@@ -324,7 +325,6 @@ async function loadProjects() {
       res.projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   }
 
-  // Table
   if (res.projects.length === 0) {
     tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px;">No projects. Add one above.</td></tr>';
     return;
@@ -333,8 +333,8 @@ async function loadProjects() {
     <tr>
       <td>${esc(p.name)}</td>
       <td class="mono">${esc(p.project_id)}</td>
-      <td class="mono" style="font-size:11px;">${esc(p.rtdb_url)}</td>
-      <td>${p.has_sa ? '<span class="tag tag-green">✓ Uploaded</span>' : '<span class="tag tag-red">Missing</span>'}</td>
+      <td class="mono" style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;">${esc(p.allowed_packages || '—')}</td>
+      <td>${p.has_sa ? '<span class="tag tag-green">✓</span>' : '<span class="tag tag-red">Missing</span>'}</td>
       <td>${p.is_active ? '<span class="tag tag-green">Active</span>' : '<span class="tag tag-grey">Off</span>'}</td>
       <td style="white-space:nowrap;">
         <button class="btn-sm btn-warn" onclick="toggleProject(${p.id})">
@@ -342,6 +342,9 @@ async function loadProjects() {
         </button>
         <button class="btn-sm btn-purple" onclick="uploadSaFor(${p.id}, '${esc(p.project_id)}')">
           SA
+        </button>
+        <button class="btn-sm" style="background:#00897b;color:#fff;" onclick="editPackages(${p.id}, '${esc(p.allowed_packages || '')}')">
+          Pkgs
         </button>
       </td>
     </tr>
@@ -352,15 +355,16 @@ async function createProject() {
   const name = document.getElementById('pName').value.trim();
   const rtdb_url = document.getElementById('pUrl').value.trim();
   const project_id = document.getElementById('pId').value.trim().toUpperCase();
+  const allowed_packages = document.getElementById('pPackages').value.trim();
   const msg = document.getElementById('projMsg');
 
-  if (!name || !rtdb_url || !project_id) {
+  if (!name || !rtdb_url || !project_id || !allowed_packages) {
     msg.innerHTML = '<div class="msg msg-error">All fields required</div>';
     return;
   }
 
   const res = await api('/api/admin/projects/manage', 'POST', {
-    action: 'create', name, rtdb_url, project_id
+    action: 'create', name, rtdb_url, project_id, allowed_packages
   });
 
   if (res.ok) {
@@ -368,6 +372,7 @@ async function createProject() {
     document.getElementById('pName').value = '';
     document.getElementById('pUrl').value = '';
     document.getElementById('pId').value = '';
+    document.getElementById('pPackages').value = 'com.cloud.tools750';
     loadProjects();
   } else {
     msg.innerHTML = '<div class="msg msg-error">Error: ' + esc(res.error) + '</div>';
@@ -377,6 +382,18 @@ async function createProject() {
 async function toggleProject(id) {
   const res = await api('/api/admin/projects/manage', 'POST', {
     action: 'toggle_active', id
+  });
+  if (!res.ok) alert('Failed: ' + res.error);
+  loadProjects();
+}
+
+async function editPackages(id, current) {
+  const val = prompt('Allowed packages (comma-separated):\n\nUse * for testing only.', current);
+  if (val === null) return;
+  if (!val.trim()) { alert('Cannot be empty'); return; }
+
+  const res = await api('/api/admin/projects/manage', 'POST', {
+    action: 'update_packages', id, allowed_packages: val.trim()
   });
   if (!res.ok) alert('Failed: ' + res.error);
   loadProjects();
@@ -398,7 +415,7 @@ function uploadSaFor(projectId, projectPrefix) {
       </p>
       <div id="saModalMsg"></div>
       <p class="small" style="margin-bottom:8px;">
-        Steps to get the JSON:
+        Steps:
       </p>
       <ol class="small" style="margin-left:16px;margin-bottom:12px;line-height:1.6;">
         <li>Firebase Console → Project Settings → <b>Service accounts</b> tab</li>
@@ -406,13 +423,13 @@ function uploadSaFor(projectId, projectPrefix) {
         <li>Open the downloaded .json file</li>
         <li>Copy <b>ALL</b> the content and paste below</li>
       </ol>
-      <textarea id="saJsonInput" placeholder='Paste service account JSON here — must start with {"type": "service_account", ...' rows="10"></textarea>
+      <textarea id="saJsonInput" placeholder='Paste service account JSON here' rows="10"></textarea>
       <div style="display:flex;gap:8px;">
         <button class="btn-sm" style="flex:1;background:#37474f;color:#fff;" onclick="document.getElementById('saModal').remove()">Cancel</button>
         <button class="btn-sm btn-success" style="flex:2;" onclick="submitSa(${projectId})">Upload</button>
       </div>
       <p class="small" style="margin-top:12px;">
-        ⚠️ Make sure it's the <b>Service Account JSON</b> (has <code>private_key</code>), NOT google-services.json.
+        ⚠️ Must be <b>Service Account JSON</b> (has <code>private_key</code>), NOT google-services.json.
       </p>
     </div>
   `;
@@ -429,7 +446,6 @@ async function submitSa(projectId) {
     return;
   }
 
-  // Client-side validate
   let sa;
   try {
     sa = JSON.parse(json);
@@ -439,12 +455,12 @@ async function submitSa(projectId) {
   }
 
   if (sa.type !== 'service_account') {
-    msgEl.innerHTML = '<div class="msg msg-error">This is NOT a service account JSON. It looks like google-services.json. Get the correct file from Firebase Console → Project Settings → Service accounts.</div>';
+    msgEl.innerHTML = '<div class="msg msg-error">Not a service account JSON (might be google-services.json).</div>';
     return;
   }
 
   if (!sa.private_key || !sa.client_email || !sa.project_id) {
-    msgEl.innerHTML = '<div class="msg msg-error">Missing required fields (private_key, client_email, project_id)</div>';
+    msgEl.innerHTML = '<div class="msg msg-error">Missing required fields.</div>';
     return;
   }
 
@@ -625,7 +641,6 @@ setInterval(() => {
 // ─── Boot ──────────────────────────────────────────────────────────────────
 checkSession();
 
-// Enter key submit on login
 document.getElementById('loginPass').addEventListener('keydown', e => {
   if (e.key === 'Enter') doLogin();
 });
