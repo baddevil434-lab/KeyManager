@@ -32,6 +32,8 @@ module.exports = async (req, res) => {
     // ─── Admin: sessions ─────────────────────────────────────────────────
     if (path === '/api/admin/sessions/list') return await sessionList(req, res);
     if (path === '/api/admin/sessions/kill') return await sessionKill(req, res);
+
+    // ─── Admin: wake offline devices ─────────────────────────────────────
     if (path === '/api/admin/wake') return await wakeDevices(req, res);
 
     // ─── Health check ────────────────────────────────────────────────────
@@ -99,10 +101,9 @@ async function clientLogin(req, res) {
     return L.fail(res, 'key_expired', 403);
   }
 
-  // Check SA is uploaded before minting
   if (!key.sa_json_base64) {
     return L.fail(res, 'project_not_configured', 500,
-      { detail: 'Service account not uploaded for this project. Admin must upload via web panel.' });
+      { detail: 'Service account not uploaded for this project.' });
   }
 
   let customToken;
@@ -204,7 +205,7 @@ async function adminLogin(req, res) {
   if (!username || !password) return L.fail(res, 'missing_fields', 400);
 
   const ip = L.clientIp(req);
-  const rl = await L.checkRate(`admin:${ip}`, 5, 300); // 5 tries per 5 min
+  const rl = await L.checkRate(`admin:${ip}`, 5, 300);
   if (!rl.allowed)
     return L.fail(res, 'rate_limited', 429, { retry_after: rl.retryAfter });
 
@@ -215,7 +216,7 @@ async function adminLogin(req, res) {
   if (!hash || !L.bcrypt.compareSync(password, hash))
     return L.fail(res, 'invalid_credentials', 401);
 
-  const token = L.signJwt({ role: 'admin', username }, 60 * 60 * 8); // 8 hours
+  const token = L.signJwt({ role: 'admin', username }, 60 * 60 * 8);
 
   res.setHeader('Set-Cookie',
     `admin_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${60*60*8}`);
@@ -431,7 +432,6 @@ async function projectUploadSa(req, res) {
   if (!saJson || saJson.length < 100)
     return L.fail(res, 'sa_json_required', 400, { detail: 'Paste valid service account JSON' });
 
-  // Validate JSON structure
   let sa;
   try {
     sa = JSON.parse(saJson);
@@ -448,7 +448,6 @@ async function projectUploadSa(req, res) {
   const proj = await L.qOne(`SELECT id, project_id FROM firebase_projects WHERE id=$1`, [projectId]);
   if (!proj) return L.fail(res, 'project_not_found', 404);
 
-  // Store as base64
   const b64 = Buffer.from(saJson, 'utf8').toString('base64');
 
   await L.run(
@@ -504,22 +503,27 @@ async function sessionKill(req, res) {
 
 async function wakeDevices(req, res) {
   if (req.method !== 'POST') return L.fail(res, 'method_not_allowed', 405);
-  const sess = L.requireAdminSession(req);
-  if (!sess) return L.fail(res, 'unauthorized', 401);
+  if (!L.requireAdminSession(req)) return L.fail(res, 'unauthorized', 401);
 
   const b = L.readBody(req);
-  const projectId = parseInt(b.project_id, 10);
-  const tokens = Array.isArray(b.tokens) ? b.tokens.filter(t => typeof t === 'string' && t.length > 20) : [];
+  const projectRef = String(b.project_id || '').trim();
+  const tokens = Array.isArray(b.tokens)
+    ? b.tokens.filter(t => typeof t === 'string' && t.length > 20)
+    : [];
 
-  if (!projectId) return L.fail(res, 'project_id_required', 400);
+  if (!projectRef) return L.fail(res, 'project_id_required', 400);
   if (tokens.length === 0) return L.fail(res, 'no_tokens', 400);
 
-  // Fetch project row (needs SA)
+  // Lookup project by numeric id OR prefix (case-insensitive)
   const project = await L.qOne(
     `SELECT id, project_id, rtdb_url, sa_json_base64
-     FROM firebase_projects WHERE id=$1 AND is_active=TRUE`,
-    [projectId]
+     FROM firebase_projects
+     WHERE (id::text = $1 OR UPPER(project_id) = UPPER($1))
+       AND is_active = TRUE
+     LIMIT 1`,
+    [projectRef]
   );
+
   if (!project) return L.fail(res, 'project_not_found', 404);
   if (!project.sa_json_base64) {
     return L.fail(res, 'project_not_configured', 500,
@@ -527,10 +531,10 @@ async function wakeDevices(req, res) {
   }
 
   try {
-    // Get Firebase app for this project (uses cached SA from DB)
+    // Get Firebase app for this project (SA loaded from DB)
     const { app } = await L.fbApp(project);
 
-    // Send HIGH-PRIORITY DATA-ONLY message to all tokens
+    // HIGH-PRIORITY DATA-ONLY message
     // (No "notification" block — otherwise onMessageReceived won't fire in background)
     const message = {
       data: {
@@ -539,20 +543,20 @@ async function wakeDevices(req, res) {
       },
       android: {
         priority: 'high',
-        ttl: 60 * 1000  // 60s
+        ttl: 60 * 1000 // 60s
       },
-      tokens: tokens.slice(0, 500)  // FCM multicast limit
+      tokens: tokens.slice(0, 500) // FCM multicast limit
     };
 
     const result = await app.messaging().sendEachForMulticast(message);
 
-    // Log failures for debugging
+    // Log first 5 failures for debugging
     const failures = [];
     result.responses.forEach((r, idx) => {
-      if (!r.success) {
+      if (!r.success && failures.length < 5) {
         failures.push({
           token: tokens[idx].substring(0, 12) + '...',
-          error: r.error?.message || 'unknown'
+          error: (r.error && r.error.message) ? r.error.message : 'unknown'
         });
       }
     });
@@ -560,7 +564,7 @@ async function wakeDevices(req, res) {
     return L.ok(res, {
       success: result.successCount,
       failed: result.failureCount,
-      failures: failures.slice(0, 5)  // first 5 failures for debug
+      failures: failures
     });
 
   } catch (e) {
