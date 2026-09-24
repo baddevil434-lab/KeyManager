@@ -15,6 +15,7 @@ module.exports = async (req, res) => {
     if (path === '/api/client/auth/verify')     return await clientVerify(req, res);
     if (path === '/api/client/auth/logout')     return await clientLogout(req, res);
     if (path === '/api/client/auth/change-key') return await clientChangeKey(req, res);
+    if (path === '/api/client/wake')            return await clientWake(req, res);
 
     // ─── Admin web auth ──────────────────────────────────────────────────
     if (path === '/api/admin/auth/login')   return await adminLogin(req, res);
@@ -34,7 +35,7 @@ module.exports = async (req, res) => {
     if (path === '/api/admin/sessions/list') return await sessionList(req, res);
     if (path === '/api/admin/sessions/kill') return await sessionKill(req, res);
 
-    // ─── Admin: wake offline devices ─────────────────────────────────────
+    // ─── Admin: wake (web panel) ─────────────────────────────────────────
     if (path === '/api/admin/wake') return await wakeDevices(req, res);
 
     // ─── Health check ────────────────────────────────────────────────────
@@ -85,7 +86,6 @@ async function clientLogin(req, res) {
     return L.fail(res, 'invalid_key', 401);
   }
 
-  // ── Per-project package allowlist check ────────────────────────────────
   const allowed = (key.allowed_packages || '')
     .split(',')
     .map(s => s.trim())
@@ -131,7 +131,6 @@ async function clientLogin(req, res) {
     );
     key.bound_device_fp = androidId;
   }
-  // ────────────────────────────────────────────────────────────────────────
 
   let customToken;
   try {
@@ -218,12 +217,6 @@ async function clientLogout(req, res) {
   return L.ok(res, {});
 }
 
-/**
- * Client-side key change.
- * Requires active session + correct old key.
- * New key must be exactly 6 digits.
- * Kills all sessions → forces re-login with new key.
- */
 async function clientChangeKey(req, res) {
   if (req.method !== 'POST') return L.fail(res, 'method_not_allowed', 405);
 
@@ -237,12 +230,10 @@ async function clientChangeKey(req, res) {
 
   if (!oldKey || !newKey) return L.fail(res, 'missing_fields', 400);
 
-  // New key must be exactly 6 digits (0-9)
   if (!/^\d{6}$/.test(newKey))
     return L.fail(res, 'invalid_new_key_format', 400,
       { detail: 'New key must be exactly 6 digits (0-9).' });
 
-  // Lookup session
   const session = await L.qOne(
     `SELECT cs.*, k.id AS key_id, k.key_hash AS current_hash,
             k.status AS key_status, k.expiry_ts
@@ -257,12 +248,10 @@ async function clientChangeKey(req, res) {
   const now = Math.floor(Date.now() / 1000);
   if (Number(session.expiry_ts) < now) return L.fail(res, 'key_expired', 403);
 
-  // Verify old key matches session's key
   const oldHash = L.hashKey(oldKey);
   if (oldHash !== session.current_hash)
     return L.fail(res, 'old_key_mismatch', 400);
 
-  // Verify new key not already taken
   const newHash = L.hashKey(newKey);
   const existing = await L.qOne(
     `SELECT id FROM license_keys WHERE key_hash=$1`,
@@ -270,13 +259,11 @@ async function clientChangeKey(req, res) {
   );
   if (existing) return L.fail(res, 'new_key_taken', 409);
 
-  // Update key
   await L.run(
     `UPDATE license_keys SET key_hash=$1, key_plain=$2 WHERE id=$3`,
     [newHash, newKey, session.key_id]
   );
 
-  // Kill all sessions (forces re-login)
   await L.run(
     `UPDATE client_sessions SET is_active=FALSE WHERE key_id=$1`,
     [session.key_id]
@@ -286,6 +273,70 @@ async function clientChangeKey(req, res) {
     message: 'Key changed. Please log in again with the new key.',
     key_id: session.key_id
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLIENT: WAKE OFFLINE DEVICES
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function clientWake(req, res) {
+  if (req.method !== 'POST') return L.fail(res, 'method_not_allowed', 405);
+
+  const sessionId = String(req.headers['x-session-token'] || '').trim();
+  if (!sessionId || sessionId.length !== 48)
+    return L.fail(res, 'invalid_session', 401);
+
+  const now = Math.floor(Date.now() / 1000);
+  const sess = await L.qOne(
+    `SELECT cs.*, k.status AS key_status, k.expiry_ts,
+            fp.sa_json_base64, fp.project_id AS fb_project_id, fp.rtdb_url
+     FROM client_sessions cs
+     JOIN license_keys k ON cs.key_id = k.id
+     JOIN firebase_projects fp ON cs.project_id = fp.id
+     WHERE cs.session_id = $1 AND cs.is_active = TRUE`,
+    [sessionId]
+  );
+
+  if (!sess) return L.fail(res, 'session_invalid', 401);
+  if (Number(sess.expires_at) < now) return L.fail(res, 'session_expired', 401);
+  if (sess.key_status === 'blocked') return L.fail(res, 'key_blocked', 403);
+  if (Number(sess.expiry_ts) < now) return L.fail(res, 'key_expired', 403);
+  if (!sess.sa_json_base64) return L.fail(res, 'project_not_configured', 500);
+
+  const b = L.readBody(req);
+  const tokens = Array.isArray(b.tokens)
+    ? b.tokens.filter(t => typeof t === 'string' && t.length > 20)
+    : [];
+
+  if (tokens.length === 0) return L.fail(res, 'no_tokens', 400);
+
+  try {
+    const projectRow = {
+      project_id: sess.fb_project_id,
+      rtdb_url: sess.rtdb_url,
+      sa_json_base64: sess.sa_json_base64
+    };
+    const { app } = await L.fbApp(projectRow);
+
+    const message = {
+      data: { type: 'wake', ts: String(Date.now()) },
+      android: { priority: 'high', ttl: 60 * 1000 },
+      tokens: tokens.slice(0, 500)
+    };
+
+    const result = await app.messaging().sendEachForMulticast(message);
+
+    await L.run(`UPDATE client_sessions SET last_ping=$1 WHERE session_id=$2`, [now, sessionId]);
+
+    return L.ok(res, {
+      success: result.successCount,
+      failed: result.failureCount
+    });
+
+  } catch (e) {
+    console.error('[clientWake] Error:', e);
+    return L.fail(res, 'wake_failed', 500, { detail: e.message });
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -362,8 +413,6 @@ async function keyCreate(req, res) {
   const now = Math.floor(Date.now() / 1000);
   const expiryTs = now + (expiryDays * 86400);
 
-  // 6-digit numeric key → only 1M combinations.
-  // Collision possible → retry up to 10 times.
   let inserted = null;
   let rawKey = '';
   for (let attempt = 0; attempt < 10; attempt++) {
@@ -376,14 +425,10 @@ async function keyCreate(req, res) {
          VALUES ($1,$2,$3,'active',$4,$5,$6,$7,$8,'') RETURNING id`,
         [keyHash, rawKey, type, expiryTs, projectId, customerName, notes, now]
       );
-      break; // success
+      break;
     } catch (e) {
-      // PostgreSQL unique_violation code: 23505
-      if (e.code === '23505') {
-        // Collision — try another 6-digit key
-        continue;
-      }
-      throw e; // other errors bubble up to global handler
+      if (e.code === '23505') continue;
+      throw e;
     }
   }
 
@@ -625,7 +670,7 @@ async function sessionKill(req, res) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ADMIN: WAKE OFFLINE DEVICES (FCM dispatch)
+// ADMIN: WAKE (web panel)
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function wakeDevices(req, res) {
@@ -667,20 +712,9 @@ async function wakeDevices(req, res) {
 
     const result = await app.messaging().sendEachForMulticast(message);
 
-    const failures = [];
-    result.responses.forEach((r, idx) => {
-      if (!r.success && failures.length < 5) {
-        failures.push({
-          token: tokens[idx].substring(0, 12) + '...',
-          error: (r.error && r.error.message) ? r.error.message : 'unknown'
-        });
-      }
-    });
-
     return L.ok(res, {
       success: result.successCount,
-      failed: result.failureCount,
-      failures: failures
+      failed: result.failureCount
     });
 
   } catch (e) {
