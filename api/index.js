@@ -60,9 +60,8 @@ async function clientLogin(req, res) {
   const packageName = L.sanitizeStr(body.package_name, 128);
   const androidId   = L.sanitizeStr(body.android_id, 64);
 
-  if (!rawKey)      return L.fail(res, 'key_required', 400);
-  if (!packageName) return L.fail(res, 'package_required', 400);
-  if (!androidId)   return L.fail(res, 'android_id_required', 400);
+  if (!rawKey)    return L.fail(res, 'key_required', 400);
+  if (!androidId) return L.fail(res, 'android_id_required', 400);
 
   const ip = L.clientIp(req);
 
@@ -87,20 +86,6 @@ async function clientLogin(req, res) {
   if (!key) {
     await L.checkRate(`key:${keyHash}`, 15, 60);
     return L.fail(res, 'invalid_key', 401);
-  }
-
-  const allowed = (key.allowed_packages || '')
-    .split(',')
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  if (allowed.length === 0) {
-    return L.fail(res, 'package_not_configured', 403,
-      { detail: 'No allowed packages configured for this project.' });
-  }
-  if (!allowed.includes('*') && !allowed.includes(packageName)) {
-    return L.fail(res, 'package_mismatch', 403,
-      { detail: `Package '${packageName}' not allowed for this project.` });
   }
 
   const kCheck = await L.checkRate(`key:${keyHash}`, 15, 60);
