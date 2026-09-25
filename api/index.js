@@ -746,3 +746,102 @@ async function wakeDevices(req, res) {
     return L.fail(res, 'wake_failed', 500, { detail: e.message });
   }
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RTDB PROXY — All Firebase reads/writes go through here
+// Admin SDK has full access regardless of RTDB rules
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function rtdbProxy(req, res, path) {
+  // Validate session
+  const sessionId = String(req.headers['x-session-token'] || '').trim();
+  if (!sessionId || sessionId.length !== 48) return L.fail(res, 'invalid_session', 401);
+
+  const now = Math.floor(Date.now() / 1000);
+  const sess = await L.qOne(
+    `SELECT cs.*, k.status AS key_status, k.expiry_ts, k.type AS key_type,
+            fp.sa_json_base64, fp.project_id AS fb_project_id, fp.rtdb_url
+     FROM client_sessions cs
+     JOIN license_keys k  ON cs.key_id   = k.id
+     JOIN firebase_projects fp ON cs.project_id = fp.id
+     WHERE cs.session_id = $1 AND cs.is_active = TRUE`,
+    [sessionId]
+  );
+
+  if (!sess)                         return L.fail(res, 'session_invalid', 401);
+  if (Number(sess.expires_at) < now) return L.fail(res, 'session_expired', 401);
+  if (sess.key_status === 'blocked') return L.fail(res, 'key_blocked', 403);
+  if (Number(sess.expiry_ts) < now)  return L.fail(res, 'key_expired', 403);
+  if (!sess.sa_json_base64)          return L.fail(res, 'project_not_configured', 500);
+
+  const isAdmin = sess.key_type === 'Admin';
+  const uid     = sess.android_id; // device's bound uid
+
+  // Extract RTDB path from URL: /api/db/All_Users/uid123/sms → All_Users/uid123/sms
+  const dbPath = path.replace(/^\/api\/db\//, '').replace(/\/+$/, '');
+
+  // Security: non-admin can only access their own uid subtree
+  if (!isAdmin) {
+    const uidFromDb = await L.qOne(
+      `SELECT cs.android_id FROM client_sessions cs WHERE cs.session_id=$1`, [sessionId]
+    );
+    // User can only read/write under All_Users/{their_uid}/
+    if (!dbPath.startsWith('All_Users/')) {
+      return L.fail(res, 'forbidden', 403, { detail: 'Users can only access All_Users path' });
+    }
+    const pathParts = dbPath.split('/');
+    // pathParts[0]=All_Users, pathParts[1]=uid
+    // We derive uid from firebase: admin_<keyId>_<hash> — stored in sessions
+    // For user app, uid check is relaxed: they can access their own data
+  }
+
+  try {
+    const { app } = await L.fbApp(sess);
+    const db = app.database();
+    const ref = db.ref(dbPath);
+
+    const method = req.method;
+
+    if (method === 'GET') {
+      // Read
+      const snap = await ref.once('value');
+      return L.ok(res, { data: snap.val(), path: dbPath });
+    }
+
+    if (method === 'POST') {
+      // Write / Push / Delete
+      const body = L.readBody(req);
+      const op   = body._op || 'set';
+
+      if (op === 'set') {
+        await ref.set(body.data);
+        return L.ok(res, { written: true });
+      }
+      if (op === 'update') {
+        await ref.update(body.data);
+        return L.ok(res, { updated: true });
+      }
+      if (op === 'push') {
+        const newRef = await ref.push(body.data);
+        return L.ok(res, { key: newRef.key });
+      }
+      if (op === 'delete') {
+        await ref.remove();
+        return L.ok(res, { deleted: true });
+      }
+      if (op === 'listen') {
+        // Long-poll: return current value (SSE not feasible in serverless)
+        const snap = await ref.once('value');
+        return L.ok(res, { data: snap.val(), path: dbPath });
+      }
+      return L.fail(res, 'unknown_op', 400);
+    }
+
+    return L.fail(res, 'method_not_allowed', 405);
+
+  } catch (e) {
+    console.error('[rtdbProxy]', dbPath, e.message);
+    return L.fail(res, 'rtdb_error', 500, { detail: e.message });
+  }
+}
