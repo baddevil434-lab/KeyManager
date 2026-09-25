@@ -17,19 +17,9 @@ function db() {
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 10000
     });
-
-// ── DB Migration: ensure app config columns exist ────────────────────────────
-async function ensureAppConfigColumns(pool) {
-  const cols = [
-    "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS android_app_id TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS web_api_key     TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS project_number  TEXT NOT NULL DEFAULT ''",
-  ];
-  for (const sql of cols) {
-    try { await pool.query(sql); } catch(e) { /* already exists */ }
-  }
-}
-ensureAppConfigColumns(pool).catch(console.error);
+    _pool.query("ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS android_app_id TEXT NOT NULL DEFAULT ''").catch(()=>{});
+    _pool.query("ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS web_api_key TEXT NOT NULL DEFAULT ''").catch(()=>{});
+    _pool.query("ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS project_number TEXT NOT NULL DEFAULT ''").catch(()=>{});
   }
   return _pool;
 }

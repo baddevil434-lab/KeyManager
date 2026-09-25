@@ -206,9 +206,9 @@
         <div id="projMsg"></div>
 
         <div class="msg msg-info" style="margin-bottom:16px;">
-          <b>Step 1:</b> Upload Service Account JSON file below.<br>
-          <b>Step 2:</b> Fields auto-fill ho jayenge.<br>
-          <b>Step 3:</b> Click "Add Project".
+          <b>Step 1:</b> Service Account JSON upload karo → Name, RTDB URL auto-fill.<br>
+          <b>Step 2:</b> google-services.json upload karo → App ID, API Key, Project Number auto-fill.<br>
+          <b>Step 3:</b> "Add Project" click karo.
         </div>
 
         <label class="file-upload" id="saFileUploadBox">
@@ -217,6 +217,15 @@
           <div class="title" id="saFileTitle">Tap to select Service Account JSON</div>
           <div class="sub" id="saFileSub">
             Firebase Console → Project Settings → Service accounts → Generate new private key
+          </div>
+        </label>
+
+        <label class="file-upload" id="gsFileUploadBox" style="margin-top:10px;">
+          <input type="file" id="gsFileInput" accept=".json,application/json" onchange="handleGsFile(event)">
+          <div class="icon">📱</div>
+          <div class="title" id="gsFileTitle">Tap to select google-services.json</div>
+          <div class="sub" id="gsFileSub">
+            Firebase Console → Project Settings → Your Apps → Android App → Download
           </div>
         </label>
 
@@ -230,13 +239,13 @@
         <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">RTDB URL (auto-filled, verify for regional databases)</label>
         <input type="text" id="pUrl" placeholder="https://xxx-default-rtdb.firebaseio.com">
 
-        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Android App ID <span style="color:#5f6368">(google-services.json → mobilesdk_app_id)</span></label>
-        <input type="text" id="pAndroidAppId" placeholder="1:123456789012:android:abcdef1234567890">
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Android App ID</label>
+        <input type="text" id="pAndroidAppId" placeholder="1:123456789012:android:abcdef">
 
-        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Web API Key <span style="color:#5f6368">(google-services.json → api_key[0].current_key)</span></label>
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Web API Key</label>
         <input type="text" id="pWebApiKey" placeholder="AIzaSyXXXXXXXXXXXXXXXXXXXXXXXX">
 
-        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Project Number <span style="color:#5f6368">(google-services.json → project_number)</span></label>
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Project Number</label>
         <input type="text" id="pProjectNumber" placeholder="123456789012">
 
         <button class="btn-success" style="width:100%;margin-top:12px;" onclick="createProject()">
@@ -448,13 +457,13 @@ document.addEventListener('DOMContentLoaded', () => {
 async function createProject() {
   const name           = document.getElementById('pName').value.trim();
   const rtdb_url       = document.getElementById('pUrl').value.trim();
-  const android_app_id = (document.getElementById('pAndroidAppId') ? document.getElementById('pAndroidAppId').value : '').trim();
-  const web_api_key    = (document.getElementById('pWebApiKey')    ? document.getElementById('pWebApiKey').value    : '').trim();
-  const project_number = (document.getElementById('pProjectNumber') ? document.getElementById('pProjectNumber').value : '').trim();
+  const android_app_id = (document.getElementById('pAndroidAppId')  || {value:''}).value.trim();
+  const web_api_key    = (document.getElementById('pWebApiKey')      || {value:''}).value.trim();
+  const project_number = (document.getElementById('pProjectNumber')  || {value:''}).value.trim();
   const msg = document.getElementById('projMsg');
 
   if (!parsedSaJson) {
-    msg.innerHTML = '<div class="msg msg-error">Upload Service Account JSON file first</div>';
+    msg.innerHTML = '<div class="msg msg-error">Service Account JSON upload karo pehle</div>';
     return;
   }
   if (!name || !rtdb_url) {
@@ -503,6 +512,33 @@ async function createProject() {
   loadProjects();
 }
 
+function handleGsFile(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const gs = JSON.parse(e.target.result);
+      const client = gs.client && gs.client[0];
+      const appId   = client && client.client_info && client.client_info.mobilesdk_app_id || '';
+      const apiKey  = client && client.api_key && client.api_key[0] && client.api_key[0].current_key || '';
+      const projNum = gs.project_info && gs.project_info.project_number || '';
+
+      if (document.getElementById('pAndroidAppId'))  document.getElementById('pAndroidAppId').value  = appId;
+      if (document.getElementById('pWebApiKey'))     document.getElementById('pWebApiKey').value     = apiKey;
+      if (document.getElementById('pProjectNumber')) document.getElementById('pProjectNumber').value = projNum;
+
+      document.getElementById('gsFileTitle').textContent = '✅ ' + file.name;
+      document.getElementById('gsFileSub').textContent   = 'App ID, API Key, Project Number auto-filled';
+      document.getElementById('gsFileUploadBox').style.borderColor = '#34a853';
+      document.getElementById('gsFileUploadBox').style.background  = '#1e2a1e';
+    } catch(err) {
+      alert('Invalid google-services.json: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
 function resetProjectForm() {
   parsedSaJson = null;
   document.getElementById('saFileInput').value = '';
@@ -512,9 +548,11 @@ function resetProjectForm() {
 
   document.getElementById('pName').value = '';
   document.getElementById('pUrl').value = '';
-  if(document.getElementById('pAndroidAppId')) document.getElementById('pAndroidAppId').value = '';
-  if(document.getElementById('pWebApiKey'))    document.getElementById('pWebApiKey').value = '';
-  if(document.getElementById('pProjectNumber'))document.getElementById('pProjectNumber').value = '';
+  if(document.getElementById('pAndroidAppId'))  document.getElementById('pAndroidAppId').value  = '';
+  if(document.getElementById('pWebApiKey'))     document.getElementById('pWebApiKey').value     = '';
+  if(document.getElementById('pProjectNumber')) document.getElementById('pProjectNumber').value = '';
+  if(document.getElementById('gsFileTitle'))    document.getElementById('gsFileTitle').textContent = 'Tap to select google-services.json';
+  if(document.getElementById('gsFileUploadBox')) { document.getElementById('gsFileUploadBox').style.borderColor=''; document.getElementById('gsFileUploadBox').style.background=''; }
   document.getElementById('pName').dataset.userEdited = '';
   document.getElementById('pUrl').dataset.userEdited = '';
 
