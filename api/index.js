@@ -41,6 +41,18 @@ module.exports = async (req, res) => {
     // ─── Health check ────────────────────────────────────────────────────
     if (path === '/api/health') return L.ok(res, { ts: Date.now() });
 
+    // Debug: check table columns (remove after fix)
+    if (path === '/api/debug/schema') {
+      if (!L.requireAdminSession(req)) return L.fail(res, 'unauthorized', 401);
+      const cols = await L.q(
+        `SELECT column_name, data_type FROM information_schema.columns 
+         WHERE table_name IN ('license_keys','firebase_projects','client_sessions')
+         ORDER BY table_name, ordinal_position`
+      );
+      const active = await L.q(`SELECT id, name, is_active FROM firebase_projects`);
+      return L.ok(res, { columns: cols, projects: active });
+    }
+
     // One-time migration endpoint — run once after deploy
     if (path === '/api/admin/migrate') {
       if (!L.requireAdminSession(req)) return L.fail(res, 'unauthorized', 401);
@@ -441,7 +453,7 @@ async function keyCreate(req, res) {
       break;
     } catch (e) {
       if (e.code === '23505') continue;
-      throw e;
+      return L.fail(res, 'db_error', 500, { detail: e.message, code: e.code });
     }
   }
 
