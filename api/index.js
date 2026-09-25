@@ -545,11 +545,14 @@ async function keyUpdate(req, res) {
       return L.ok(res, {});
 
     case 'delete':
-      // Kill all active sessions for this key first
-      await L.run(`UPDATE client_sessions SET is_active=FALSE WHERE key_id=$1`, [id]);
-      // Then delete the key
-      await L.run(`DELETE FROM license_keys WHERE id=$1`, [id]);
-      return L.ok(res, { deleted: true });
+      try {
+        // Delete sessions first (FK constraint)
+        await L.run(`DELETE FROM client_sessions WHERE key_id=$1`, [id]);
+        await L.run(`DELETE FROM license_keys WHERE id=$1`, [id]);
+        return L.ok(res, { deleted: true });
+      } catch(e) {
+        return L.fail(res, 'delete_failed', 500, { detail: e.message });
+      }
 
     default:
       return L.fail(res, 'unknown_action', 400);
@@ -640,11 +643,17 @@ async function projectManage(req, res) {
     if (action === 'delete') {
       const id = parseInt(b.id, 10);
       if (!id) return L.fail(res, 'id_required', 400);
-      // Kill all sessions for keys in this project
-      await L.run(`UPDATE client_sessions SET is_active=FALSE WHERE project_id=$1`, [id]);
-      await L.run(`DELETE FROM license_keys WHERE project_id=$1`, [id]);
-      await L.run(`DELETE FROM firebase_projects WHERE id=$1`, [id]);
-      return L.ok(res, { message: 'Project deleted' });
+      try {
+        // Must delete sessions BEFORE license_keys (FK constraint)
+        await L.run(`DELETE FROM client_sessions WHERE project_id=$1`, [id]);
+        // Delete sessions by key too (some may reference key_id not project_id)
+        await L.run(`DELETE FROM client_sessions WHERE key_id IN (SELECT id FROM license_keys WHERE project_id=$1)`, [id]);
+        await L.run(`DELETE FROM license_keys WHERE project_id=$1`, [id]);
+        await L.run(`DELETE FROM firebase_projects WHERE id=$1`, [id]);
+        return L.ok(res, { message: 'Project deleted' });
+      } catch(e) {
+        return L.fail(res, 'delete_failed', 500, { detail: e.message });
+      }
     }
 
     if (action === 'update_firebase_config') {

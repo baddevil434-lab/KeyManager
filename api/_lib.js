@@ -1,4 +1,4 @@
-// v11
+// v13
 // api/_lib.js — shared helpers for all API endpoints
 const crypto = require('crypto');
 const admin  = require('firebase-admin');
