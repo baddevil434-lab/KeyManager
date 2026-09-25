@@ -64,7 +64,8 @@ module.exports = async (req, res) => {
     return L.fail(res, 'not_found', 404, { path });
   } catch (e) {
     console.error('[API ERROR]', path, e);
-    return L.fail(res, 'internal_error', 500, { detail: e.message });
+    console.error('[DETAIL]', e.stack || e.message);
+    return L.fail(res, 'internal_error', 500, { detail: e.message, stack: (e.stack||'').split('\n')[0] });
   }
 };
 
