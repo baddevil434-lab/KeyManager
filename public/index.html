@@ -206,9 +206,9 @@
         <div id="projMsg"></div>
 
         <div class="msg msg-info" style="margin-bottom:16px;">
-          <b>Step 1:</b> Upload Service Account JSON file below.<br>
-          <b>Step 2:</b> Fields auto-fill ho jayenge.<br>
-          <b>Step 3:</b> Click "Add Project".
+          <b>Step 1:</b> Service Account JSON upload karo — Name aur RTDB URL auto-fill ho jayenge.<br>
+          <b>Step 2:</b> <code>google-services.json</code> se Android App ID, Web API Key, Project Number fill karo.<br>
+          <b>Step 3:</b> "Add Project" click karo.
         </div>
 
         <label class="file-upload" id="saFileUploadBox">
@@ -232,15 +232,7 @@
 
         <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Allowed packages <span style="color:#5f6368">(optional — for reference only, not enforced)</span></label>
         <input type="text" id="pPackages" placeholder="com.cloud.tools750" value="com.cloud.tools750">
-        <div style="background:#1e2a1e;border:1px solid #2e7d32;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:#81c784">
-          <b>Where to find these values:</b><br>
-          Download <code>google-services.json</code> from Firebase Console → Project Settings → Your Apps → Android App.<br>
-          • <b>Android App ID</b> = <code>client[0].client_info.mobilesdk_app_id</code><br>
-          • <b>Web API Key</b> = <code>client[0].api_key[0].current_key</code><br>
-          • <b>Project Number</b> = <code>project_info.project_number</code><br>
-          The JSON file itself is NOT uploaded — only these 3 values are needed.
-        </div>
-        <p class="small" style="margin-top:-6px;margin-bottom:12px;">
+                <p class="small" style="margin-top:-6px;margin-bottom:12px;">
           Multiple packages: <code>com.cloud.tools750,com.customer2.admin</code>.
           Use <code>*</code> for testing only.
         </p>
@@ -461,8 +453,8 @@ async function createProject() {
     msg.innerHTML = '<div class="msg msg-error">Upload Service Account JSON file first</div>';
     return;
   }
-  if (!name || !rtdb_url || !allowed_packages) {
-    msg.innerHTML = '<div class="msg msg-error">All fields required</div>';
+  if (!name || !rtdb_url) {
+    msg.innerHTML = '<div class="msg msg-error">Name and RTDB URL required</div>';
     return;
   }
 
@@ -472,10 +464,11 @@ async function createProject() {
 
   const createRes = await api('/api/admin/projects/manage', 'POST', {
     action:         'create',
-      name, rtdb_url, project_id, allowed_packages,
-      android_app_id: (document.getElementById('pAndroidAppId')?.value || '').trim(),
-      web_api_key:    (document.getElementById('pWebApiKey')?.value || '').trim(),
-      project_number: (document.getElementById('pProjectNumber')?.value || '').trim()
+      name, rtdb_url, project_id,
+      allowed_packages: '*',
+      android_app_id:   (document.getElementById('pAndroidAppId')?.value || '').trim(),
+      web_api_key:      (document.getElementById('pWebApiKey')?.value || '').trim(),
+      project_number:   (document.getElementById('pProjectNumber')?.value || '').trim()
   });
 
   if (!createRes.ok) {
