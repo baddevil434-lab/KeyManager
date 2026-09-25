@@ -41,6 +41,26 @@ module.exports = async (req, res) => {
     // ─── Health check ────────────────────────────────────────────────────
     if (path === '/api/health') return L.ok(res, { ts: Date.now() });
 
+    // One-time migration endpoint — run once after deploy
+    if (path === '/api/admin/migrate') {
+      if (!L.requireAdminSession(req)) return L.fail(res, 'unauthorized', 401);
+      const results = [];
+      const migrations = [
+        "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS android_app_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS web_api_key TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS project_number TEXT NOT NULL DEFAULT ''",
+      ];
+      for (const sql of migrations) {
+        try {
+          await L.run(sql);
+          results.push({ sql: sql.substring(0, 60), ok: true });
+        } catch(e) {
+          results.push({ sql: sql.substring(0, 60), ok: false, err: e.message });
+        }
+      }
+      return L.ok(res, { migrations: results });
+    }
+
     return L.fail(res, 'not_found', 404, { path });
   } catch (e) {
     console.error('[API ERROR]', path, e);
