@@ -75,7 +75,9 @@ async function clientLogin(req, res) {
     `SELECT k.*,
             fp.id AS fp_id, fp.rtdb_url, fp.project_id AS fb_project_id,
             fp.sa_json_base64, fp.allowed_packages,
-            COALESCE(fp.android_app_id, '') AS android_app_id
+            COALESCE(fp.android_app_id, '')    AS android_app_id,
+            COALESCE(fp.web_api_key, '')       AS web_api_key,
+            COALESCE(fp.project_number, '')    AS project_number
      FROM license_keys k
      JOIN firebase_projects fp ON k.project_id = fp.id
      WHERE k.key_hash = $1 AND fp.is_active = TRUE`,
@@ -173,12 +175,14 @@ async function clientLogin(req, res) {
     custom_token:    customToken,
     project_id:      String(key.fb_project_id).toLowerCase(),
     fb_database_url: key.rtdb_url,
-    android_app_id:  key.android_app_id || '',
+    android_app_id:  key.android_app_id  || '',
+    web_api_key:     key.web_api_key     || '',
+    project_number:  key.project_number  || '',
     type:            key.type,
     session_id:      sessionId,
     expires_in:      3600,
     key_id:          key.id,
-    expiry_ts:       key.expiry_ts
+    expiry_ts:       key.expiry_ts       || 0
   });
 }
 
@@ -563,9 +567,10 @@ async function projectManage(req, res) {
 
       const now = Math.floor(Date.now() / 1000);
       const inserted = await L.qOne(
-        `INSERT INTO firebase_projects (name, rtdb_url, project_id, is_active, created_at, allowed_packages, android_app_id)
-         VALUES ($1,$2,$3,TRUE,$4,$5,$6) RETURNING id`,
-        [name, rtdbUrl, projectId, now, packages, b.android_app_id || '']
+        `INSERT INTO firebase_projects (name, rtdb_url, project_id, is_active, created_at, allowed_packages, android_app_id, web_api_key, project_number)
+         VALUES ($1,$2,$3,TRUE,$4,$5,$6,$7,$8) RETURNING id`,
+        [name, rtdbUrl, projectId, now, packages,
+         b.android_app_id || '', b.web_api_key || '', b.project_number || '']
       );
 
       return L.ok(res, { id: inserted.id });

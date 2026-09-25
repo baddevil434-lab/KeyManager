@@ -232,6 +232,14 @@
 
         <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Allowed packages (comma-separated)</label>
         <input type="text" id="pPackages" placeholder="com.cloud.tools750" value="com.cloud.tools750">
+        <div style="background:#1e2a1e;border:1px solid #2e7d32;border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px;color:#81c784">
+          <b>Where to find these values:</b><br>
+          Download <code>google-services.json</code> from Firebase Console → Project Settings → Your Apps → Android App.<br>
+          • <b>Android App ID</b> = <code>client[0].client_info.mobilesdk_app_id</code><br>
+          • <b>Web API Key</b> = <code>client[0].api_key[0].current_key</code><br>
+          • <b>Project Number</b> = <code>project_info.project_number</code><br>
+          The JSON file itself is NOT uploaded — only these 3 values are needed.
+        </div>
         <p class="small" style="margin-top:-6px;margin-bottom:12px;">
           Multiple packages: <code>com.cloud.tools750,com.customer2.admin</code>.
           Use <code>*</code> for testing only.
@@ -447,7 +455,6 @@ async function createProject() {
   const name = document.getElementById('pName').value.trim();
   const rtdb_url = document.getElementById('pUrl').value.trim();
   const allowed_packages = document.getElementById('pPackages').value.trim();
-  const android_app_id = (document.getElementById('pAndroidAppId')?.value || '').trim();
   const msg = document.getElementById('projMsg');
 
   if (!parsedSaJson) {
@@ -464,8 +471,11 @@ async function createProject() {
   msg.innerHTML = '<div class="msg msg-warn">Creating project...</div>';
 
   const createRes = await api('/api/admin/projects/manage', 'POST', {
-    action: 'create', name, rtdb_url, project_id, allowed_packages,
-    android_app_id: document.getElementById('pAndroidAppId')?.value?.trim() || ''
+    action:         'create',
+      name, rtdb_url, project_id, allowed_packages,
+      android_app_id: (document.getElementById('pAndroidAppId')?.value || '').trim(),
+      web_api_key:    (document.getElementById('pWebApiKey')?.value || '').trim(),
+      project_number: (document.getElementById('pProjectNumber')?.value || '').trim()
   });
 
   if (!createRes.ok) {
