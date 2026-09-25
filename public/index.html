@@ -447,6 +447,7 @@ async function createProject() {
   const name = document.getElementById('pName').value.trim();
   const rtdb_url = document.getElementById('pUrl').value.trim();
   const allowed_packages = document.getElementById('pPackages').value.trim();
+  const android_app_id = (document.getElementById('pAndroidAppId')?.value || '').trim();
   const msg = document.getElementById('projMsg');
 
   if (!parsedSaJson) {
@@ -463,7 +464,8 @@ async function createProject() {
   msg.innerHTML = '<div class="msg msg-warn">Creating project...</div>';
 
   const createRes = await api('/api/admin/projects/manage', 'POST', {
-    action: 'create', name, rtdb_url, project_id, allowed_packages
+    action: 'create', name, rtdb_url, project_id, allowed_packages,
+    android_app_id: document.getElementById('pAndroidAppId')?.value?.trim() || ''
   });
 
   if (!createRes.ok) {
