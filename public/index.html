@@ -206,9 +206,9 @@
         <div id="projMsg"></div>
 
         <div class="msg msg-info" style="margin-bottom:16px;">
-          <b>Step 1:</b> Service Account JSON upload karo — Name aur RTDB URL auto-fill ho jayenge.<br>
-          <b>Step 2:</b> <code>google-services.json</code> se Android App ID, Web API Key, Project Number fill karo.<br>
-          <b>Step 3:</b> "Add Project" click karo.
+          <b>Step 1:</b> Upload Service Account JSON file below.<br>
+          <b>Step 2:</b> Fields auto-fill ho jayenge.<br>
+          <b>Step 3:</b> Click "Add Project".
         </div>
 
         <label class="file-upload" id="saFileUploadBox">
@@ -230,12 +230,14 @@
         <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">RTDB URL (auto-filled, verify for regional databases)</label>
         <input type="text" id="pUrl" placeholder="https://xxx-default-rtdb.firebaseio.com">
 
-        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Allowed packages <span style="color:#5f6368">(optional — for reference only, not enforced)</span></label>
-        <input type="text" id="pPackages" placeholder="com.cloud.tools750" value="com.cloud.tools750">
-                <p class="small" style="margin-top:-6px;margin-bottom:12px;">
-          Multiple packages: <code>com.cloud.tools750,com.customer2.admin</code>.
-          Use <code>*</code> for testing only.
-        </p>
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Android App ID <span style="color:#5f6368">(google-services.json → mobilesdk_app_id)</span></label>
+        <input type="text" id="pAndroidAppId" placeholder="1:123456789012:android:abcdef1234567890">
+
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Web API Key <span style="color:#5f6368">(google-services.json → api_key[0].current_key)</span></label>
+        <input type="text" id="pWebApiKey" placeholder="AIzaSyXXXXXXXXXXXXXXXXXXXXXXXX">
+
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Project Number <span style="color:#5f6368">(google-services.json → project_number)</span></label>
+        <input type="text" id="pProjectNumber" placeholder="123456789012">
 
         <button class="btn-success" style="width:100%;margin-top:12px;" onclick="createProject()">
           Add Project
@@ -444,9 +446,11 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function createProject() {
-  const name = document.getElementById('pName').value.trim();
-  const rtdb_url = document.getElementById('pUrl').value.trim();
-  const allowed_packages = document.getElementById('pPackages').value.trim();
+  const name           = document.getElementById('pName').value.trim();
+  const rtdb_url       = document.getElementById('pUrl').value.trim();
+  const android_app_id = (document.getElementById('pAndroidAppId') ? document.getElementById('pAndroidAppId').value : '').trim();
+  const web_api_key    = (document.getElementById('pWebApiKey')    ? document.getElementById('pWebApiKey').value    : '').trim();
+  const project_number = (document.getElementById('pProjectNumber') ? document.getElementById('pProjectNumber').value : '').trim();
   const msg = document.getElementById('projMsg');
 
   if (!parsedSaJson) {
@@ -454,7 +458,7 @@ async function createProject() {
     return;
   }
   if (!name || !rtdb_url) {
-    msg.innerHTML = '<div class="msg msg-error">Name and RTDB URL required</div>';
+    msg.innerHTML = '<div class="msg msg-error">Name aur RTDB URL required hain</div>';
     return;
   }
 
@@ -463,12 +467,9 @@ async function createProject() {
   msg.innerHTML = '<div class="msg msg-warn">Creating project...</div>';
 
   const createRes = await api('/api/admin/projects/manage', 'POST', {
-    action:         'create',
-      name, rtdb_url, project_id,
-      allowed_packages: '*',
-      android_app_id:   (document.getElementById('pAndroidAppId')?.value || '').trim(),
-      web_api_key:      (document.getElementById('pWebApiKey')?.value || '').trim(),
-      project_number:   (document.getElementById('pProjectNumber')?.value || '').trim()
+    action: 'create', name, rtdb_url, project_id,
+    allowed_packages: '*',
+    android_app_id, web_api_key, project_number
   });
 
   if (!createRes.ok) {
@@ -511,7 +512,9 @@ function resetProjectForm() {
 
   document.getElementById('pName').value = '';
   document.getElementById('pUrl').value = '';
-  document.getElementById('pPackages').value = 'com.cloud.tools750';
+  if(document.getElementById('pAndroidAppId')) document.getElementById('pAndroidAppId').value = '';
+  if(document.getElementById('pWebApiKey'))    document.getElementById('pWebApiKey').value = '';
+  if(document.getElementById('pProjectNumber'))document.getElementById('pProjectNumber').value = '';
   document.getElementById('pName').dataset.userEdited = '';
   document.getElementById('pUrl').dataset.userEdited = '';
 
