@@ -512,9 +512,11 @@ async function keyUpdate(req, res) {
       return L.ok(res, {});
 
     case 'delete':
+      // Kill all active sessions for this key first
       await L.run(`UPDATE client_sessions SET is_active=FALSE WHERE key_id=$1`, [id]);
+      // Then delete the key
       await L.run(`DELETE FROM license_keys WHERE id=$1`, [id]);
-      return L.ok(res, {});
+      return L.ok(res, { deleted: true });
 
     default:
       return L.fail(res, 'unknown_action', 400);
@@ -578,6 +580,35 @@ async function projectManage(req, res) {
       const newState = !p.is_active;
       await L.run(`UPDATE firebase_projects SET is_active=$1 WHERE id=$2`, [newState, id]);
       return L.ok(res, { is_active: newState });
+    }
+
+    if (action === 'update_firebase_config') {
+      const id = parseInt(b.id, 10);
+      if (!id) return L.fail(res, 'id_required', 400);
+      await L.run(
+        `UPDATE firebase_projects SET
+           android_app_id = $1,
+           web_api_key    = $2,
+           project_number = $3
+         WHERE id = $4`,
+        [
+          L.sanitizeStr(b.android_app_id  || '', 256),
+          L.sanitizeStr(b.web_api_key     || '', 256),
+          L.sanitizeStr(b.project_number  || '', 64),
+          id
+        ]
+      );
+      return L.ok(res, { message: 'Firebase config updated' });
+    }
+
+    if (action === 'delete') {
+      const id = parseInt(b.id, 10);
+      if (!id) return L.fail(res, 'id_required', 400);
+      // Kill all sessions for keys in this project
+      await L.run(`UPDATE client_sessions SET is_active=FALSE WHERE project_id=$1`, [id]);
+      await L.run(`DELETE FROM license_keys WHERE project_id=$1`, [id]);
+      await L.run(`DELETE FROM firebase_projects WHERE id=$1`, [id]);
+      return L.ok(res, { message: 'Project deleted' });
     }
 
     return L.fail(res, 'unknown_action', 400);

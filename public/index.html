@@ -867,6 +867,31 @@ document.getElementById('loginPass').addEventListener('keydown', e => {
 document.getElementById('loginUser').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('loginPass').focus();
 });
+
+async function editFirebaseConfig(id, currentAppId, currentApiKey, currentProjNum) {
+  const appId   = prompt('Android App ID:', currentAppId || '');
+  if (appId === null) return;
+  const apiKey  = prompt('Web API Key:', currentApiKey || '');
+  if (apiKey === null) return;
+  const projNum = prompt('Project Number:', currentProjNum || '');
+  if (projNum === null) return;
+
+  const res = await api('/api/admin/projects/manage', 'POST', {
+    action: 'update_firebase_config',
+    id, android_app_id: appId, web_api_key: apiKey, project_number: projNum
+  });
+  if (res.ok) { alert('✅ Firebase config updated!'); loadProjects(); }
+  else alert('Failed: ' + res.error);
+}
+
+async function deleteProject(id, name) {
+  if (!confirm('Delete project "' + name + '"?\nThis will also delete ALL keys and sessions for this project!')) return;
+  const res = await api('/api/admin/projects/manage', 'POST', {
+    action: 'delete', id
+  });
+  if (res.ok) { loadProjects(); }
+  else alert('Failed: ' + res.error);
+}
 </script>
 </body>
 </html>
