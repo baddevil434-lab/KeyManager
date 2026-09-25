@@ -110,7 +110,7 @@
     .btn-sm { padding: 5px 8px; font-size: 11px; }
   }
 </style>
-<!-- v8 -->
+<!-- v10 -->
 </head>
 <body>
 <div class="container">
@@ -575,7 +575,7 @@ async function loadProjects() {
     sel.innerHTML = '<option value="">— No projects yet —</option>';
   } else {
     sel.innerHTML = '<option value="">— Select project —</option>' +
-      res.projects.map(p => `<option value="${p.id}">${esc(p.name)} — ${esc(p.project_id)}</option>`).join('');
+      res.projects.filter(p => p.is_active).map(p => `<option value="${p.id}">${esc(p.name)} — ${esc(p.project_id)}</option>`).join('');
   }
 
   if (res.projects.length === 0) {
@@ -594,7 +594,8 @@ async function loadProjects() {
           ${p.is_active ? 'Disable' : 'Enable'}
         </button>
         <button class="btn-sm btn-purple" onclick="uploadSaFor(${p.id}, '${esc(p.project_id)}')">SA</button>
-        <button class="btn-sm" style="background:#00897b;color:#fff;" onclick="editPackages(${p.id}, '${esc(p.allowed_packages || '')}')">Pkgs</button>
+        <button class="btn-sm" style="background:#1565c0;color:#fff;" onclick="editFirebaseConfig(${p.id}, '${esc(p.android_app_id||'')}', '${esc(p.web_api_key||'')}', '${esc(p.project_number||'')}')">⚙ Config</button>
+        <button class="btn-sm" style="background:#b71c1c;color:#fff;" onclick="deleteProject(${p.id}, '${esc(p.name)}')">Del</button>
       </td>
     </tr>
   `).join('');

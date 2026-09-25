@@ -566,6 +566,9 @@ async function projectManage(req, res) {
   if (req.method === 'GET') {
     const projects = await L.q(
       `SELECT id, name, rtdb_url, project_id, is_active, created_at, allowed_packages,
+              COALESCE(android_app_id,'') AS android_app_id,
+              COALESCE(web_api_key,'') AS web_api_key,
+              COALESCE(project_number,'') AS project_number,
               (CASE WHEN COALESCE(sa_json_base64,'') != '' THEN TRUE ELSE FALSE END) AS has_sa
        FROM firebase_projects ORDER BY name`
     );
@@ -906,4 +909,3 @@ async function rtdbProxy(req, res, path) {
     return L.fail(res, 'rtdb_error', 500, { detail: e.message });
   }
 }
-
