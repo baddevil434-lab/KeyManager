@@ -15,6 +15,7 @@ module.exports = async (req, res) => {
     if (path === '/api/client/auth/verify')     return await clientVerify(req, res);
     if (path === '/api/client/auth/logout')     return await clientLogout(req, res);
     if (path === '/api/client/auth/change-key') return await clientChangeKey(req, res);
+    if (path === '/api/client/auth/refresh')    return await clientRefreshToken(req, res);
     if (path === '/api/client/wake')            return await clientWake(req, res);
 
     // ─── Admin web auth ──────────────────────────────────────────────────
@@ -37,6 +38,13 @@ module.exports = async (req, res) => {
 
     // ─── Admin: wake (web panel) ─────────────────────────────────────────
     if (path === '/api/admin/wake') return await wakeDevices(req, res);
+
+    // ─── RTDB proxy — ALL Firebase reads/writes from Android ────────────
+    // FIX: route was defined but never registered → caused "not_found" for
+    // every VercelDb.get/set/update/delete/push call in the Android app.
+    if (path.startsWith('/api/db/') || path === '/api/db') {
+      return await rtdbProxy(req, res, path);
+    }
 
     // ─── Health check ────────────────────────────────────────────────────
     if (path === '/api/health') return L.ok(res, { ts: Date.now() });
@@ -820,6 +828,60 @@ async function wakeDevices(req, res) {
   }
 }
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLIENT: TOKEN REFRESH
+// Refreshes the Firebase custom token for an existing session (called ~every 50 min).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function clientRefreshToken(req, res) {
+  if (req.method !== 'POST') return L.fail(res, 'method_not_allowed', 405);
+
+  const sessionId = String(req.headers['x-session-token'] || '').trim();
+  if (!sessionId || sessionId.length !== 48)
+    return L.fail(res, 'invalid_session', 401);
+
+  const now = Math.floor(Date.now() / 1000);
+  const sess = await L.qOne(
+    `SELECT cs.*, k.status AS key_status, k.expiry_ts, k.id AS key_id,
+            fp.sa_json_base64, fp.project_id AS fb_project_id, fp.rtdb_url,
+            COALESCE(fp.android_app_id, '') AS android_app_id,
+            COALESCE(fp.web_api_key, '')    AS web_api_key
+     FROM client_sessions cs
+     JOIN license_keys k  ON cs.key_id   = k.id
+     JOIN firebase_projects fp ON cs.project_id = fp.id
+     WHERE cs.session_id = $1 AND cs.is_active = TRUE`,
+    [sessionId]
+  );
+
+  if (!sess)                         return L.fail(res, 'session_invalid', 401);
+  if (Number(sess.expires_at) < now) return L.fail(res, 'session_expired', 401);
+  if (sess.key_status === 'blocked') return L.fail(res, 'key_blocked', 403);
+  if (Number(sess.expiry_ts) < now)  return L.fail(res, 'key_expired', 403);
+  if (!sess.sa_json_base64)          return L.fail(res, 'project_not_configured', 500);
+
+  try {
+    const uid = `admin_${sess.key_id}_${L.crypto.createHash('sha256')
+      .update(sess.android_id).digest('hex').substring(0, 8)}`;
+    const customToken = await L.mintCustomToken(sess, uid, {
+      admin: true,
+      projectId: String(sess.fb_project_id).toLowerCase(),
+      keyId: sess.key_id,
+      type: sess.key_type || 'Admin'
+    });
+
+    // Extend session expiry on refresh
+    await L.run(
+      `UPDATE client_sessions SET last_ping=$1, expires_at=$2 WHERE session_id=$3`,
+      [now, now + 3600, sessionId]
+    );
+
+    return L.ok(res, { custom_token: customToken });
+  } catch (e) {
+    console.error('[clientRefreshToken]', e.message);
+    return L.fail(res, 'token_mint_failed', 500, { detail: e.message });
+  }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RTDB PROXY — All Firebase reads/writes go through here
