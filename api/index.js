@@ -69,6 +69,7 @@ module.exports = async (req, res) => {
         "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS android_app_id TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS web_api_key TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS project_number TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE firebase_projects ADD COLUMN IF NOT EXISTS rtdb_secret TEXT NOT NULL DEFAULT ''",
       ];
       for (const sql of migrations) {
         try {
@@ -580,7 +581,9 @@ async function projectManage(req, res) {
               COALESCE(android_app_id,'') AS android_app_id,
               COALESCE(web_api_key,'') AS web_api_key,
               COALESCE(project_number,'') AS project_number,
-              (CASE WHEN COALESCE(sa_json_base64,'') != '' THEN TRUE ELSE FALSE END) AS has_sa
+              COALESCE(rtdb_secret,'') AS rtdb_secret,
+              (CASE WHEN COALESCE(sa_json_base64,'') != '' THEN TRUE ELSE FALSE END) AS has_sa,
+              (CASE WHEN COALESCE(rtdb_secret,'') != '' THEN TRUE ELSE FALSE END) AS has_secret
        FROM firebase_projects ORDER BY name`
     );
     return L.ok(res, { projects });
@@ -601,10 +604,11 @@ async function projectManage(req, res) {
 
       const now = Math.floor(Date.now() / 1000);
       const inserted = await L.qOne(
-        `INSERT INTO firebase_projects (name, rtdb_url, project_id, is_active, created_at, allowed_packages, android_app_id, web_api_key, project_number)
-         VALUES ($1,$2,$3,TRUE,$4,$5,$6,$7,$8) RETURNING id`,
+        `INSERT INTO firebase_projects (name, rtdb_url, project_id, is_active, created_at, allowed_packages, android_app_id, web_api_key, project_number, rtdb_secret)
+         VALUES ($1,$2,$3,TRUE,$4,$5,$6,$7,$8,$9) RETURNING id`,
         [name, rtdbUrl, projectId, now, packages,
-         b.android_app_id || '', b.web_api_key || '', b.project_number || '']
+         b.android_app_id || '', b.web_api_key || '', b.project_number || '',
+         b.rtdb_secret || '']
       );
 
       return L.ok(res, { id: inserted.id });
@@ -636,12 +640,14 @@ async function projectManage(req, res) {
         `UPDATE firebase_projects SET
            android_app_id = $1,
            web_api_key    = $2,
-           project_number = $3
-         WHERE id = $4`,
+           project_number = $3,
+           rtdb_secret    = $4
+         WHERE id = $5`,
         [
           L.sanitizeStr(b.android_app_id  || '', 256),
           L.sanitizeStr(b.web_api_key     || '', 256),
           L.sanitizeStr(b.project_number  || '', 64),
+          L.sanitizeStr(b.rtdb_secret     || '', 256),
           id
         ]
       );
@@ -662,34 +668,6 @@ async function projectManage(req, res) {
       } catch(e) {
         return L.fail(res, 'delete_failed', 500, { detail: e.message });
       }
-    }
-
-    if (action === 'update_firebase_config') {
-      const id = parseInt(b.id, 10);
-      if (!id) return L.fail(res, 'id_required', 400);
-      await L.run(
-        `UPDATE firebase_projects SET
-           android_app_id = $1,
-           web_api_key    = $2,
-           project_number = $3
-         WHERE id = $4`,
-        [
-          L.sanitizeStr(b.android_app_id  || '', 256),
-          L.sanitizeStr(b.web_api_key     || '', 256),
-          L.sanitizeStr(b.project_number  || '', 64),
-          id
-        ]
-      );
-      return L.ok(res, { message: 'Firebase config updated' });
-    }
-
-    if (action === 'delete') {
-      const id = parseInt(b.id, 10);
-      if (!id) return L.fail(res, 'id_required', 400);
-      await L.run(`UPDATE client_sessions SET is_active=FALSE WHERE project_id=$1`, [id]);
-      await L.run(`DELETE FROM license_keys WHERE project_id=$1`, [id]);
-      await L.run(`DELETE FROM firebase_projects WHERE id=$1`, [id]);
-      return L.ok(res, { message: 'Project deleted' });
     }
 
     return L.fail(res, 'unknown_action', 400);
@@ -889,14 +867,14 @@ async function clientRefreshToken(req, res) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function rtdbProxy(req, res, path) {
-  // Validate session
   const sessionId = String(req.headers['x-session-token'] || '').trim();
   if (!sessionId || sessionId.length !== 48) return L.fail(res, 'invalid_session', 401);
 
   const now = Math.floor(Date.now() / 1000);
   const sess = await L.qOne(
     `SELECT cs.*, k.status AS key_status, k.expiry_ts, k.type AS key_type,
-            fp.sa_json_base64, fp.project_id AS fb_project_id, fp.rtdb_url
+            fp.sa_json_base64, fp.project_id AS fb_project_id, fp.rtdb_url,
+            COALESCE(fp.rtdb_secret,'') AS rtdb_secret
      FROM client_sessions cs
      JOIN license_keys k  ON cs.key_id   = k.id
      JOIN firebase_projects fp ON cs.project_id = fp.id
@@ -908,68 +886,81 @@ async function rtdbProxy(req, res, path) {
   if (Number(sess.expires_at) < now) return L.fail(res, 'session_expired', 401);
   if (sess.key_status === 'blocked') return L.fail(res, 'key_blocked', 403);
   if (Number(sess.expiry_ts) < now)  return L.fail(res, 'key_expired', 403);
-  if (!sess.sa_json_base64)          return L.fail(res, 'project_not_configured', 500);
 
-  const isAdmin = sess.key_type === 'Admin';
-  const uid     = sess.android_id; // device's bound uid
+  // rtdb_secret ya sa_json dono mein se koi ek hona chahiye
+  const hasSecret = sess.rtdb_secret && sess.rtdb_secret.trim() !== '';
+  const hasSa     = sess.sa_json_base64 && sess.sa_json_base64.trim() !== '';
+  if (!hasSecret && !hasSa) return L.fail(res, 'project_not_configured', 500,
+    { detail: 'Set rtdb_secret or upload service account for this project.' });
 
-  // Extract RTDB path from URL: /api/db/All_Users/uid123/sms → All_Users/uid123/sms
-  const dbPath = path.replace(/^\/api\/db\//, '').replace(/\/+$/, '');
-
-  // Security: non-admin can only access their own uid subtree
-  if (!isAdmin) {
-    const uidFromDb = await L.qOne(
-      `SELECT cs.android_id FROM client_sessions cs WHERE cs.session_id=$1`, [sessionId]
-    );
-    // User can only read/write under All_Users/{their_uid}/
-    if (!dbPath.startsWith('All_Users/')) {
-      return L.fail(res, 'forbidden', 403, { detail: 'Users can only access All_Users path' });
-    }
-    const pathParts = dbPath.split('/');
-    // pathParts[0]=All_Users, pathParts[1]=uid
-    // We derive uid from firebase: admin_<keyId>_<hash> — stored in sessions
-    // For user app, uid check is relaxed: they can access their own data
-  }
+  const dbPath  = path.replace(/^\/api\/db\//, '').replace(/\/+$/, '');
+  const baseUrl = (sess.rtdb_url || '').replace(/\/$/, '');
 
   try {
+    // ── PATH A: rtdb_secret available → direct REST API (rules bypassed) ──
+    if (hasSecret) {
+      const restUrl = `${baseUrl}/${dbPath}.json?auth=${sess.rtdb_secret}`;
+      const method  = req.method;
+
+      if (method === 'GET') {
+        const r    = await fetch(restUrl);
+        const data = await r.json();
+        // Firebase REST returns the error object if auth fails
+        if (data && data.error) return L.fail(res, 'rtdb_error', 500, { detail: data.error });
+        return L.ok(res, { data, path: dbPath });
+      }
+
+      if (method === 'POST') {
+        const body = L.readBody(req);
+        const op   = body._op || 'set';
+        const headers = { 'Content-Type': 'application/json' };
+
+        if (op === 'set') {
+          await fetch(restUrl, { method: 'PUT', headers, body: JSON.stringify(body.data) });
+          return L.ok(res, { written: true });
+        }
+        if (op === 'update') {
+          await fetch(restUrl, { method: 'PATCH', headers, body: JSON.stringify(body.data) });
+          return L.ok(res, { updated: true });
+        }
+        if (op === 'push') {
+          const r = await fetch(restUrl, { method: 'POST', headers, body: JSON.stringify(body.data) });
+          const d = await r.json();
+          return L.ok(res, { key: d.name });
+        }
+        if (op === 'delete') {
+          await fetch(restUrl, { method: 'DELETE' });
+          return L.ok(res, { deleted: true });
+        }
+        if (op === 'listen') {
+          const r    = await fetch(restUrl);
+          const data = await r.json();
+          return L.ok(res, { data, path: dbPath });
+        }
+        return L.fail(res, 'unknown_op', 400);
+      }
+
+      return L.fail(res, 'method_not_allowed', 405);
+    }
+
+    // ── PATH B: fallback to Admin SDK (sa_json_base64) ────────────────────
     const { app } = await L.fbApp(sess);
-    const db = app.database();
+    const db  = app.database();
     const ref = db.ref(dbPath);
 
-    const method = req.method;
-
-    if (method === 'GET') {
-      // Read
+    if (req.method === 'GET') {
       const snap = await ref.once('value');
       return L.ok(res, { data: snap.val(), path: dbPath });
     }
 
-    if (method === 'POST') {
-      // Write / Push / Delete
+    if (req.method === 'POST') {
       const body = L.readBody(req);
       const op   = body._op || 'set';
-
-      if (op === 'set') {
-        await ref.set(body.data);
-        return L.ok(res, { written: true });
-      }
-      if (op === 'update') {
-        await ref.update(body.data);
-        return L.ok(res, { updated: true });
-      }
-      if (op === 'push') {
-        const newRef = await ref.push(body.data);
-        return L.ok(res, { key: newRef.key });
-      }
-      if (op === 'delete') {
-        await ref.remove();
-        return L.ok(res, { deleted: true });
-      }
-      if (op === 'listen') {
-        // Long-poll: return current value (SSE not feasible in serverless)
-        const snap = await ref.once('value');
-        return L.ok(res, { data: snap.val(), path: dbPath });
-      }
+      if (op === 'set')    { await ref.set(body.data);                     return L.ok(res, { written: true }); }
+      if (op === 'update') { await ref.update(body.data);                  return L.ok(res, { updated: true }); }
+      if (op === 'push')   { const nr = await ref.push(body.data);         return L.ok(res, { key: nr.key }); }
+      if (op === 'delete') { await ref.remove();                            return L.ok(res, { deleted: true }); }
+      if (op === 'listen') { const s = await ref.once('value');            return L.ok(res, { data: s.val(), path: dbPath }); }
       return L.fail(res, 'unknown_op', 400);
     }
 

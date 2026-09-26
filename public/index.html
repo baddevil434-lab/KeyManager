@@ -249,6 +249,11 @@
         <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;">Project Number</label>
         <input type="text" id="pProjectNumber" placeholder="123456789012">
 
+        <label class="small" style="display:block;margin-bottom:4px;color:#9aa0a6;margin-top:8px;">
+          🔑 RTDB Secret (optional) — Firebase Console → Project Settings → Service Accounts → Database Secrets
+        </label>
+        <input type="password" id="pRtdbSecret" placeholder="Paste Database Secret here (rules bypass)">
+
         <button class="btn-success" style="width:100%;margin-top:12px;" onclick="createProject()">
           Add Project
         </button>
@@ -461,6 +466,7 @@ async function createProject() {
   const android_app_id = (document.getElementById('pAndroidAppId')  || {value:''}).value.trim();
   const web_api_key    = (document.getElementById('pWebApiKey')      || {value:''}).value.trim();
   const project_number = (document.getElementById('pProjectNumber')  || {value:''}).value.trim();
+  const rtdb_secret    = (document.getElementById('pRtdbSecret')     || {value:''}).value.trim();
   const msg = document.getElementById('projMsg');
 
   if (!parsedSaJson) {
@@ -479,7 +485,7 @@ async function createProject() {
   const createRes = await api('/api/admin/projects/manage', 'POST', {
     action: 'create', name, rtdb_url, project_id,
     allowed_packages: '*',
-    android_app_id, web_api_key, project_number
+    android_app_id, web_api_key, project_number, rtdb_secret
   });
 
   if (!createRes.ok) {
@@ -587,7 +593,10 @@ async function loadProjects() {
       <td>${esc(p.name)}</td>
       <td class="mono">${esc(p.project_id)}</td>
       <td class="mono" style="font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis;">${esc(p.allowed_packages || '—')}</td>
-      <td>${p.has_sa ? '<span class="tag tag-green">✓</span>' : '<span class="tag tag-red">Missing</span>'}</td>
+      <td>
+        ${p.has_sa ? '<span class="tag tag-green">SA ✓</span>' : '<span class="tag tag-red">SA ✗</span>'}
+        ${p.has_secret ? '<span class="tag tag-green">Secret ✓</span>' : '<span class="tag tag-grey">Secret ✗</span>'}
+      </td>
       <td>${p.is_active ? '<span class="tag tag-green">Active</span>' : '<span class="tag tag-grey">Off</span>'}</td>
       <td class="actions-cell">
         <button class="btn-sm btn-warn" onclick="toggleProject(${p.id})">
@@ -889,6 +898,9 @@ function editFirebaseConfig(id, currentAppId, currentApiKey, currentProjNum) {
         style="width:100%;padding:8px;margin:4px 0 12px;background:#2d2d3f;border:1px solid #444;border-radius:6px;color:#fff;box-sizing:border-box;">
       <label style="color:#9aa0a6;font-size:12px;">Project Number</label>
       <input id="cfg_projnum" type="text" value="${currentProjNum||''}" placeholder="123456789012"
+        style="width:100%;padding:8px;margin:4px 0 12px;background:#2d2d3f;border:1px solid #444;border-radius:6px;color:#fff;box-sizing:border-box;">
+      <label style="color:#9aa0a6;font-size:12px;">🔑 RTDB Secret (Firebase Console → Project Settings → Service Accounts → Database Secrets)</label>
+      <input id="cfg_secret" type="password" value="" placeholder="Paste secret to update (leave blank = no change)"
         style="width:100%;padding:8px;margin:4px 0 16px;background:#2d2d3f;border:1px solid #444;border-radius:6px;color:#fff;box-sizing:border-box;">
       <div style="display:flex;gap:8px;">
         <button onclick="document.getElementById('cfgModal').remove()"
@@ -904,10 +916,14 @@ async function saveCfg(id) {
   const appId   = document.getElementById('cfg_appid').value.trim();
   const apiKey  = document.getElementById('cfg_apikey').value.trim();
   const projNum = document.getElementById('cfg_projnum').value.trim();
-  const r = await api('/api/admin/projects/manage', 'POST', {
+  const secret  = document.getElementById('cfg_secret').value.trim();
+  const payload = {
     action: 'update_firebase_config',
     id, android_app_id: appId, web_api_key: apiKey, project_number: projNum
-  });
+  };
+  // Only send secret if user typed something — blank = keep existing
+  if (secret) payload.rtdb_secret = secret;
+  const r = await api('/api/admin/projects/manage', 'POST', payload);
   document.getElementById('cfgModal').remove();
   if (r.ok) { loadProjects(); }
   else alert('Failed: ' + (r.error || r.detail));
